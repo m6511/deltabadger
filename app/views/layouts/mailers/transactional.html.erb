@@ -25,6 +25,10 @@
       <%= yield %>
 
       <p style="margin: 5em 0 1em 0;"></p>
+      <%# The URL is built here, not in the mailer: each action sets the user's locale only once it runs. %>
+      <% if @alert_switch %>
+      <p style="font-size: 0.85em; color: #888;"><%= t('mailer.alert_footer_html', url: settings_account_url) %></p>
+      <% end %>
     </div>
   </body>
 </html>

@@ -1,12 +1,13 @@
 //! The preference writes of SettingsController (app/controllers/settings_controller.rb): the menu's display currency
-//! and balance switch, the tracker's cash switch, the account page's advanced-bots switch, and the admin's registration
-//! and email-notification settings.
-use super::view;
+//! and balance switch, the tracker's cash switch, the account page's advanced-bots and email-alert switches, and the
+//! admin's registration and email-notification settings.
+use super::{sections, view};
 use crate::{
     codec::format_time,
     sync::wire,
     web::{
         auth::{self, User},
+        bot::action_params::ActionParams,
         flash,
         i18n::escape,
         layout::{self, Ctx},
@@ -20,11 +21,12 @@ use axum::{
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 /// The PATCH actions this module answers.
-pub const ACTIONS: [&str; 6] = [
+pub const ACTIONS: [&str; 7] = [
     "update_display_currency",
     "update_hide_balances",
     "update_show_cash",
     "update_advanced_bots",
+    "update_email_alerts",
     "update_registration",
     "update_email_notifications",
 ];
@@ -79,6 +81,7 @@ pub async fn write(app: App, ctx: Ctx, headers: HeaderMap) -> Result<Response, W
         "update_hide_balances" => hide_balances(app, ctx, headers, user).await,
         "update_show_cash" => show_cash(app, ctx, headers, user).await,
         "update_advanced_bots" => advanced_bots(app, ctx, user).await,
+        "update_email_alerts" => email_alert(app, ctx, user).await,
         "update_registration" => registration(app, ctx).await,
         _ => email_notifications(app, ctx).await,
     }
@@ -187,6 +190,24 @@ async fn advanced_bots(app: App, ctx: Ctx, user: User) -> Result<Response, WebEr
         })
         .await?;
     Ok(stream(turbo::stream("replace", "advanced_bots", widget.trim_end())))
+}
+
+/// `update_email_alerts`: an alert SettingsController::EMAIL_ALERTS does not list is `head :unprocessable_entity`.
+async fn email_alert(app: App, ctx: Ctx, user: User) -> Result<Response, WebError> {
+    let Ok(params) = ActionParams::parse_rails(&ctx.params) else { return Ok((StatusCode::BAD_REQUEST, "Bad Request\n").into_response()) };
+    let param = |name: &str| params.value().get(name).and_then(serde_json::Value::as_str);
+    let Some(alert) = param("alert").and_then(|a| sections::EMAIL_ALERTS.into_iter().find(|known| *known == a)) else {
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, [(header::CONTENT_TYPE, "text/vnd.turbo-stream.html")]).into_response());
+    };
+    let on = param("enabled") == Some("1");
+    let (inner, v, csrf) = (app.clone(), ctx.clone(), ctx.csrf_token());
+    let widget = app
+        .db(move |c| {
+            update_bang(c, &inner, user.id, &format!("email_{alert}"), &on)?;
+            Ok(sections::email_alert(&v, &csrf, alert, on))
+        })
+        .await?;
+    Ok(stream(turbo::stream("replace", &format!("email_{alert}"), widget.trim_end())))
 }
 
 /// A widget replaced in its frame, and the flash prepended (`flash.now`, when there is a notice).

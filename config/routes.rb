@@ -190,6 +190,7 @@ Rails.application.routes.draw do
       get :download_api_docs
       post :regenerate_api_token
       patch :update_advanced_bots
+      patch :update_email_alerts
       delete 'revoke_mcp_client/:id', action: :revoke_mcp_client, as: :revoke_mcp_client
       patch 'update_client_tool_permissions/:id', action: :update_client_tool_permissions,
                                                   as: :update_client_tool_permissions

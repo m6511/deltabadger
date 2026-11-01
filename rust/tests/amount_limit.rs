@@ -1028,6 +1028,22 @@ fn the_base_mail_states_the_cap_at_base_precision() {
     assert!(mail.html.contains("sold the whole 2 BTC."), "the cap and its base: {}", mail.html);
 }
 
+/// BotAlertsMailer::ALERT_SWITCHES: the base mail follows its owner's Bot stopped switch, and no other.
+#[test]
+fn the_base_mail_follows_the_bot_stopped_switch_only() {
+    let (_d, o, s) = common::install_alpaca();
+    let id = seed::insert_bot(&o.primary, &s, &base_capped(json!(2.0)));
+    deltabadger::engine::basket::refresh_composition(&o.primary, &model::load_bot(&o.primary, id).unwrap(), at(T0)).unwrap().unwrap();
+    let urls = deltabadger::mail::render::Urls { root: "http://localhost:3000/".into() };
+    let built = |low_funds: bool, bot_errors: bool, bot_stopped: bool| {
+        o.primary.execute("UPDATE users SET email_low_funds = ?1, email_bot_errors = ?2, email_bot_stopped = ?3 WHERE id = ?4",
+                          rusqlite::params![low_funds, bot_errors, bot_stopped, s.user_id]).unwrap();
+        deltabadger::mail::render::for_notice(&o.primary, id, &deltabadger::engine::notice::Notice::StoppedByBaseAmountLimit, "bot@example.com", &urls).unwrap().is_some()
+    };
+    assert!(built(false, false, true));
+    assert!(!built(true, true, false));
+}
+
 /// The base mail states the cap and the base that stopped the bot, as its marker captured them: a cap or allocation edited
 /// before delivery changes nothing. A marker written before it captured them renders from the settings as they are.
 #[tokio::test(flavor = "current_thread")]

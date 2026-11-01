@@ -1,7 +1,7 @@
 //! The settings sections' rows, as app/views/settings/widgets/* render them inside the dialog
 //! (rust/tests/pages.rs holds each to Rails' markup).
 use super::dialog::{row, switch};
-use crate::web::{i18n::escape, layout::Ctx};
+use crate::web::{i18n::{self, escape}, layout::Ctx};
 use std::collections::BTreeMap;
 
 /// A form's opening tag as `form_with` writes it, the method override and the token after it.
@@ -187,6 +187,21 @@ pub fn advanced(ctx: &Ctx, csrf: &str, on: bool) -> String {
     format!("<turbo-frame class=\"sitem\" id=\"advanced_bots\">\n  {}</turbo-frame>", row(&ctx.t("settings.advanced_bots.title"), Some(&label), "", "", None, Some(&control)))
 }
 
+/// SettingsController::EMAIL_ALERTS, in the order the account section lists them.
+pub const EMAIL_ALERTS: [&str; 3] = ["low_funds", "bot_errors", "bot_stopped"];
+
+/// settings/widgets/_email_alert, for one of EMAIL_ALERTS.
+pub fn email_alert(ctx: &Ctx, csrf: &str, alert: &str, on: bool) -> String {
+    let key = |part: &str| format!("settings.email_alerts.{alert}.{part}");
+    let frame = format!("email_{alert}");
+    let control = format!(
+        "\n    {}\n",
+        switch(csrf, &ctx.path("/settings/update_email_alerts"), &frame, "enabled", if on { "0" } else { "1" }, if on { "on" } else { "off" },
+               Some(&i18n::text(ctx.locale, &key("title"), &[])), &[("alert", Some(alert))])
+    );
+    format!("<turbo-frame class=\"sitem\" id=\"{frame}\">\n  {}</turbo-frame>", row(&ctx.t(&key("title")), Some(&ctx.t(&key("hint"))), "", "", None, Some(&control)))
+}
+
 /// settings/widgets/_registration.
 pub fn registration(ctx: &Ctx, csrf: &str, open: bool) -> String {
     let label = ctx.t("settings.index.registration_section");
@@ -225,6 +240,8 @@ pub struct Account<'a> {
     pub password: String,
     pub locale: String,
     pub time_zone: String,
+    /// One email_alert per EMAIL_ALERTS, in order.
+    pub email_alerts: [String; 3],
     pub two_fa: String,
     pub advanced: String,
     pub wash: String,
@@ -237,7 +254,7 @@ pub fn account(ctx: &Ctx, a: &Account) -> String {
         .map(|(registration, email)| format!("\n  <h3 class=\"settings__heading\">{}</h3>\n  {registration}\n  {email}\n  \n", ctx.t("settings.sections.instance")))
         .unwrap_or_default();
     format!(
-        "  <h3 class=\"settings__heading settings__heading--first\">{}</h3>\n{}\n{}\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n{}\n{instance}",
+        "  <h3 class=\"settings__heading settings__heading--first\">{}</h3>\n{}\n{}\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n  {}\n  {}\n  {}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n\n<h3 class=\"settings__heading\">{}</h3>\n{}\n{}\n{instance}",
         ctx.t("settings.sections.profile"),
         a.name,
         a.email,
@@ -245,6 +262,10 @@ pub fn account(ctx: &Ctx, a: &Account) -> String {
         ctx.t("settings.sections.preferences"),
         a.locale,
         a.time_zone,
+        ctx.t("settings.sections.email_alerts"),
+        a.email_alerts[0],
+        a.email_alerts[1],
+        a.email_alerts[2],
         ctx.t("settings.sections.security"),
         a.two_fa,
         ctx.t("links.bots"),

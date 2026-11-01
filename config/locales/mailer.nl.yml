@@ -4,6 +4,7 @@ nl:
         greeting_name: 'Hoi %{name},'
         best_html: '<p>Groeten,<br>Jan</p>'
         unsubscribe: 'Uitschrijven'
+        alert_footer_html: 'U kunt deze e-mails uitzetten in de <a href="%{url}">instellingen</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger Test-e-mail"

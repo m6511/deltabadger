@@ -633,7 +633,7 @@ pub mod test_support {
 }
 
 /// The schema of a Rails-built primary (db/schema.rb as script/rust/prepare_install.rb loads it), replayed: every
-/// `sqlite_master` statement in Rails' order, its `sqlite_sequence` rows, the 123 frozen `schema_migrations` rows
+/// `sqlite_master` statement in Rails' order, its `sqlite_sequence` rows, the 124 frozen `schema_migrations` rows
 /// (schema/rails_versions.txt) and `ar_internal_metadata` `environment = production`. Rails' `schema_sha1` row is not
 /// written: nothing reads it in production (divergence D-BOOT-NO-SCHEMA-SHA1). Generated and proved equal to Rails by
 /// tests/schema_baseline.rs; Rust migrations then run on top as on any 2.x install.

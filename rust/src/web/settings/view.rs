@@ -263,7 +263,7 @@ pub async fn account(
     let (v, inner, owner) = (ctx.clone(), app.clone(), user.clone());
     let csrf = ctx.csrf_token();
     let token = csrf.clone();
-    let (name, pending_email, wash_widget, shell_data, registration_open, advanced, email_widget) = app
+    let (name, pending_email, wash_widget, shell_data, registration_open, (advanced, alerts), email_widget) = app
         .db(move |c| {
             let (name, email): (Option<String>, Option<String>) = c.query_row(
                 "SELECT name,unconfirmed_email FROM users WHERE id=?1",
@@ -272,10 +272,10 @@ pub async fn account(
             )?;
             let read = |key: &str| crate::web::auth::app_config(c, &inner.cipher, key);
             let registration_open = read("registration_open")?.as_deref() == Some("true");
-            let advanced: bool = c.query_row(
-                "SELECT advanced_bots_enabled FROM users WHERE id=?1",
+            let (advanced, alerts): (bool, [bool; 3]) = c.query_row(
+                "SELECT advanced_bots_enabled,email_low_funds,email_bot_errors,email_bot_stopped FROM users WHERE id=?1",
                 [owner.id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?])),
             )?;
             let email_widget = self::email(c, &inner, &v, &token, false)?;
             Ok((
@@ -284,7 +284,7 @@ pub async fn account(
                 wash(c, &v, &token, owner.id)?,
                 Shell::load(c, &inner, &owner)?,
                 registration_open,
-                advanced,
+                (advanced, alerts),
                 email_widget,
             ))
         })
@@ -309,6 +309,7 @@ pub async fn account(
             password: sections::password(ctx, &csrf, draft.email.as_deref().unwrap_or(&user.email), &errors),
             locale: sections::locale(ctx, &csrf, &locale_options),
             time_zone: time_zone_row(ctx, &csrf, &user.time_zone),
+            email_alerts: std::array::from_fn(|i| sections::email_alert(ctx, &csrf, sections::EMAIL_ALERTS[i], alerts[i])),
             two_fa: sections::two_fa(ctx, user.otp_enabled),
             advanced: self::advanced(ctx, &csrf, advanced)?,
             wash: wash_widget,

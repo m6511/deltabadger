@@ -125,6 +125,7 @@ pl:
             no_keys: 'Nie masz jeszcze kluczy API.'
             permissions: 'Uprawnienia'
             provider: 'Dostawca'
+            email_alerts: 'Alerty e-mail'
         wash_sale:
             title: "Ochrona odliczenia straty"
             sentence_html: "Nie odkupuj przez %{select_html} po sprzedaży ze stratą"
@@ -150,6 +151,16 @@ pl:
             check_now: 'Sprawdź aktualizacje'
             checking: 'Sprawdzanie…'
             check_failed: 'Nie udało się sprawdzić aktualizacji.'
+        email_alerts:
+            low_funds:
+                title: 'Kończące się środki'
+                hint: 'Gdy na koncie giełdy kończy się to, co wydają twoje boty. Najwyżej raz dziennie.'
+            bot_errors:
+                title: 'Błędy botów'
+                hint: 'Gdy zlecenie się nie powiedzie, a bot spróbuje ponownie.'
+            bot_stopped:
+                title: 'Bot zatrzymany'
+                hint: 'Gdy bot zatrzyma się po błędzie, którego sam nie naprawi, albo po osiągnięciu limitu kwoty.'
         advanced_bots:
             title: Zaawansowane boty
             toggle_label: Pokaż zaawansowane boty

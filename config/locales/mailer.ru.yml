@@ -4,6 +4,7 @@ ru:
         greeting_name: 'Привет, %{name},'
         best_html: '<p>С уважением,<br>Jan</p>'
         unsubscribe: 'Отписаться'
+        alert_footer_html: 'Эти письма можно отключить в <a href="%{url}">настройках</a>.'
     test_mailer:
         test_email:
             subject: "Тестовое письмо Deltabadger"

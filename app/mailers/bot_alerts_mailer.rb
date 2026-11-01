@@ -1,4 +1,17 @@
 class BotAlertsMailer < ApplicationMailer
+  # The user's switch for each mail (Settings › Account › Email alerts), read when the mail is built, not when it is queued.
+  ALERT_SWITCHES = {
+    'end_of_funds' => :email_low_funds?,
+    'notify_about_error' => :email_bot_errors?,
+    'notify_about_restart' => :email_bot_errors?,
+    'stopped_by_error' => :email_bot_stopped?,
+    'stopped_by_amount_limit' => :email_bot_stopped?,
+    'stopped_by_base_amount_limit' => :email_bot_stopped?
+  }.freeze
+
+  before_action { @alert_switch = ALERT_SWITCHES.fetch(action_name) }
+  after_action { message.perform_deliveries = false unless params[:user].public_send(@alert_switch) }
+
   def notify_about_error
     @user = params[:user]
     @errors = params[:errors].to_sentence

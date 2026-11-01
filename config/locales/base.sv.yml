@@ -123,6 +123,7 @@ sv:
             no_keys: 'Inga API-nycklar än.'
             permissions: 'Behörigheter'
             provider: 'Leverantör'
+            email_alerts: 'E-postaviseringar'
         wash_sale:
             title: "Skydd för förlustavdrag"
             sentence_html: "Köp inte tillbaka tillgången förrän %{select_html} efter en försäljning med förlust"
@@ -148,6 +149,16 @@ sv:
             check_now: "Sök efter uppdateringar"
             checking: "Söker…"
             check_failed: "Det gick inte att söka efter uppdateringar."
+        email_alerts:
+            low_funds:
+                title: 'Lågt saldo'
+                hint: 'När saldot som dina botar använder på ett börskonto börjar bli lågt. Högst en gång per dag.'
+            bot_errors:
+                title: 'Botfel'
+                hint: 'När en order misslyckas och boten försöker igen.'
+            bot_stopped:
+                title: 'Bot stoppad'
+                hint: 'När en bot stannar efter ett fel den inte kan ta sig förbi, eller efter att ha nått sin beloppsgräns.'
         advanced_bots:
             title: Avancerade bots
             toggle_label: Visa avancerade bots

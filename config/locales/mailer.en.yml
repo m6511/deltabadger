@@ -4,6 +4,7 @@ en:
         greeting_name: 'Hi %{name},'
         best_html: '<p>Best,<br>Jan</p>'
         unsubscribe: 'Unsubscribe'
+        alert_footer_html: 'You can turn these emails off in <a href="%{url}">Settings</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger Test Email"

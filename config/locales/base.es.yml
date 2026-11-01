@@ -123,6 +123,7 @@ es:
             no_keys: 'Aún no hay claves API.'
             permissions: 'Permisos'
             provider: 'Proveedor'
+            email_alerts: 'Alertas por correo'
         wash_sale:
             title: "Protección de la deducción de pérdidas"
             sentence_html: "No recomprar durante %{select_html} tras vender con pérdida"
@@ -148,6 +149,16 @@ es:
             check_now: 'Buscar actualizaciones'
             checking: 'Buscando…'
             check_failed: 'No se pudo buscar actualizaciones.'
+        email_alerts:
+            low_funds:
+                title: 'Fondos bajos'
+                hint: 'Cuando a una cuenta del exchange se le está acabando lo que gastan sus bots. Como máximo una vez al día.'
+            bot_errors:
+                title: 'Errores del bot'
+                hint: 'Cuando una orden falla y el bot lo volverá a intentar.'
+            bot_stopped:
+                title: 'Bot detenido'
+                hint: 'Cuando un bot se detiene tras un error del que no puede recuperarse, o al alcanzar su límite de importe.'
         advanced_bots:
             title: Bots avanzados
             toggle_label: Mostrar bots avanzados

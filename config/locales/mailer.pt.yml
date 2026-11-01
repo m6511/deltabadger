@@ -4,6 +4,7 @@ pt:
         greeting_name: 'Olá %{name},'
         best_html: '<p>Cumprimentos,<br>Jan</p>'
         unsubscribe: 'Cancelar subscrição'
+        alert_footer_html: 'Pode desativar estes e-mails nas <a href="%{url}">definições</a>.'
     test_mailer:
         test_email:
             subject: "Email de teste Deltabadger"

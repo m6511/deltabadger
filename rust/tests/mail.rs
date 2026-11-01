@@ -94,7 +94,7 @@ fn the_ruby_gems_the_vectors_came_from_are_the_ones_in_the_lockfile() {
 fn the_ported_ruby_is_the_ruby_that_was_recorded() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let sources = vectors()["ported_sources"].as_object().unwrap().clone();
-    assert_eq!(sources.len(), 19);
+    assert_eq!(sources.len(), 20);
     for (file, recorded) in &sources {
         let now = hex::encode(Sha256::digest(std::fs::read(root.join(file)).unwrap()));
         assert_eq!(&now, recorded.as_str().unwrap(), "{file} changed: re-check rust/src/mail against it, re-run script/rust/mail_vectors.rb and the mail parity grid");
@@ -212,7 +212,7 @@ fn a_stored_locale_rails_does_not_know_is_english_and_a_missing_one_is_the_defau
 
 #[test]
 fn every_text_a_mail_uses_exists_in_every_locale() {
-    let keys = ["mailer.greeting_name", "test_mailer.test_email.subject", "test_mailer.test_email.body",
+    let keys = ["mailer.greeting_name", "mailer.alert_footer_html", "test_mailer.test_email.subject", "test_mailer.test_email.body",
                 "bot_alerts_mailer.end_of_funds.subject", "bot_alerts_mailer.end_of_funds.template_html",
                 "bot_alerts_mailer.notify_about_error.subject", "bot_alerts_mailer.notify_about_error.template_html",
                 "bot_alerts_mailer.stopped_by_error.subject", "bot_alerts_mailer.stopped_by_error.template_html",

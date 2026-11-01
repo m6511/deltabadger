@@ -1,0 +1,8 @@
+<% on = current_user.public_send("email_#{alert}?") %>
+<%= turbo_frame_tag "email_#{alert}", class: 'sitem' do %>
+  <%= settings_row t("settings.email_alerts.#{alert}.title"), t("settings.email_alerts.#{alert}.hint") do %>
+    <%= render 'settings/switch', url: settings_update_email_alerts_path, frame: "email_#{alert}",
+                                  state: (on ? :on : :off), enabled: (on ? '0' : '1'),
+                                  title: t("settings.email_alerts.#{alert}.title"), fields: { alert: } %>
+  <% end %>
+<% end %>

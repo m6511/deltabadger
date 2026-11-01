@@ -7,6 +7,11 @@
 <%= render 'settings/widgets/locale' %>
 <%= render 'settings/widgets/time_zone' %>
 
+<h3 class="settings__heading"><%= t('settings.sections.email_alerts') %></h3>
+<% SettingsController::EMAIL_ALERTS.each do |alert| %>
+  <%= render 'settings/widgets/email_alert', alert: %>
+<% end %>
+
 <h3 class="settings__heading"><%= t('settings.sections.security') %></h3>
 <%= render 'settings/widgets/two_fa' %>
 
