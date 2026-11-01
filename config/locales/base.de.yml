@@ -123,6 +123,7 @@ de:
             no_keys: 'Noch keine API-Schlüssel.'
             permissions: 'Berechtigungen'
             provider: 'Anbieter'
+            email_alerts: 'E-Mail-Warnungen'
         wash_sale:
             title: "Schutz der Verlustverrechnung"
             sentence_html: "Nach einem Verkauf mit Verlust das Asset %{select_html} nicht zurückkaufen"
@@ -148,6 +149,16 @@ de:
             check_now: 'Nach Updates suchen'
             checking: 'Wird gesucht …'
             check_failed: 'Die Suche nach Updates ist fehlgeschlagen.'
+        email_alerts:
+            low_funds:
+                title: 'Wenig Guthaben'
+                hint: 'Wenn auf einem Börsenkonto das knapp wird, was Ihre Bots ausgeben. Höchstens einmal am Tag.'
+            bot_errors:
+                title: 'Bot-Fehler'
+                hint: 'Wenn eine Order fehlschlägt und der Bot es erneut versucht.'
+            bot_stopped:
+                title: 'Bot gestoppt'
+                hint: 'Wenn ein Bot nach einem Fehler stoppt, den er nicht selbst beheben kann, oder nachdem er sein Betragslimit erreicht hat.'
         advanced_bots:
             title: Erweiterte Bots
             toggle_label: Erweiterte Bots anzeigen

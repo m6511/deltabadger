@@ -124,6 +124,7 @@ sk:
             no_keys: 'Zatiaľ žiadne API kľúče.'
             permissions: 'Oprávnenia'
             provider: 'Poskytovateľ'
+            email_alerts: 'E-mailové výstrahy'
         wash_sale:
             title: "Ochrana odpočtu straty"
             sentence_html: "Po predaji so stratou nekupuj rovnaké aktívum ďalších %{select_html}"
@@ -149,6 +150,16 @@ sk:
             check_now: "Skontrolovať aktualizácie"
             checking: "Kontroluje sa…"
             check_failed: "Kontrolu aktualizácií sa nepodarilo vykonať."
+        email_alerts:
+            low_funds:
+                title: 'Dochádzajúce prostriedky'
+                hint: 'Keď na účte burzy dochádza to, čo tvoje boty míňajú. Najviac raz denne.'
+            bot_errors:
+                title: 'Chyby botov'
+                hint: 'Keď objednávka zlyhá a bot to skúsi znova.'
+            bot_stopped:
+                title: 'Bot zastavený'
+                hint: 'Keď sa bot zastaví po chybe, ktorú sám nevyrieši, alebo po dosiahnutí limitu sumy.'
         advanced_bots:
             title: Pokročilí boti
             toggle_label: Zobraziť pokročilých botov

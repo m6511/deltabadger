@@ -156,7 +156,7 @@ end
 sources = %w[app/mailers/application_mailer.rb app/mailers/bot_alerts_mailer.rb app/mailers/custom_devise_mailer.rb app/mailers/test_mailer.rb
              app/models/bot/notifyable.rb app/models/bot/failable.rb app/models/bot/fundable.rb app/models/smtp_settings.rb
              config/initializers/smtp_settings.rb app/jobs/application_mail_delivery_job.rb app/views/layouts/mailers/transactional.html.erb
-             app/views/bot_alerts_mailer/end_of_funds.html.erb app/views/bot_alerts_mailer/notify_about_error.html.erb
+             app/views/bot_alerts_mailer/end_of_funds.html.erb app/views/bot_alerts_mailer/notify_about_error.html.erb app/views/bot_alerts_mailer/notify_about_restart.html.erb
              app/views/bot_alerts_mailer/stopped_by_error.html.erb app/views/bot_alerts_mailer/stopped_by_amount_limit.html.erb
              app/views/test_mailer/test_email.html.erb app/views/devise/mailer/confirmation_instructions.html.erb
              app/views/devise/mailer/reset_password_instructions.html.erb app/views/devise/mailer/email_already_taken.html.erb]

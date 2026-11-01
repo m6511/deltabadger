@@ -4,6 +4,7 @@ sk:
         greeting_name: 'Ahoj %{name},'
         best_html: '<p>S pozdravom,<br>Jan</p>'
         unsubscribe: 'Odhlasit sa'
+        alert_footer_html: 'Tieto e-maily môžeš vypnúť v <a href="%{url}">nastaveniach</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger – testovaci e-mail"

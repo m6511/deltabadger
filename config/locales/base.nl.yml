@@ -123,6 +123,7 @@ nl:
             no_keys: 'Nog geen API-sleutels.'
             permissions: 'Rechten'
             provider: 'Aanbieder'
+            email_alerts: 'E-mailwaarschuwingen'
         wash_sale:
             title: "Verliesaftrek beschermen"
             sentence_html: "Na een verkoop met verlies %{select_html} niet terugkopen"
@@ -148,6 +149,16 @@ nl:
             check_now: 'Controleren op updates'
             checking: 'Bezig met controleren…'
             check_failed: 'Controleren op updates is mislukt.'
+        email_alerts:
+            low_funds:
+                title: 'Weinig saldo'
+                hint: 'Wanneer een exchange-account bijna zonder het tegoed zit dat uw bots uitgeven. Hooguit één keer per dag.'
+            bot_errors:
+                title: 'Botfouten'
+                hint: 'Wanneer een order mislukt en de bot het opnieuw probeert.'
+            bot_stopped:
+                title: 'Bot gestopt'
+                hint: 'Wanneer een bot stopt na een fout die hij niet zelf kan oplossen, of nadat hij zijn bedraglimiet heeft bereikt.'
         advanced_bots:
             title: Geavanceerde bots
             toggle_label: Geavanceerde bots tonen

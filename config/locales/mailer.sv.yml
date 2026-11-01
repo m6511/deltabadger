@@ -4,6 +4,7 @@ sv:
         greeting_name: 'Hej %{name},'
         best_html: '<p>Bästa hälsningar,<br>Jan</p>'
         unsubscribe: 'Avsluta prenumeration'
+        alert_footer_html: 'Du kan stänga av de här mejlen i <a href="%{url}">inställningarna</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger testmail"

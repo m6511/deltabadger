@@ -1,10 +1,12 @@
-//! The US crypto tax report against Rails (script/rust/tax_vectors.rb records fixtures/tax_vectors.json): each scenario's
+//! The crypto tax report against Rails (script/rust/tax_vectors.rb records fixtures/tax_vectors.json): each scenario's
 //! install is rebuilt from the Rails schema and the rows Rails read, and the report must be Rails' own bytes or refusal,
-//! or, where the scenario says so, no figure at all with the stated reason: where Rails states a figure that cannot be defended.
+//! or, for a scenario that says "diverges: D-TAX-…", the Rust file checked by hand and committed in
+//! fixtures/tax_divergences/<name>.csv (TAX_DIVERGENCES_WRITE=1 writes them afresh, for review).
 use deltabadger::figures::FiguresError;
 use deltabadger::tax::{crypto_report, Outcome};
 use rusqlite::{types::Value as Sql, Connection};
 use serde_json::Value;
+use std::path::PathBuf;
 
 fn vectors() -> Value {
     serde_json::from_str(include_str!("fixtures/tax_vectors.json")).expect("tax vectors are JSON")
@@ -14,6 +16,12 @@ fn install(tables: &Value) -> Connection {
     let c = Connection::open_in_memory().unwrap();
     c.execute_batch(include_str!("fixtures/settings_primary_schema.sql")).unwrap();
     c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    // Rust's own NBP tables (D-TAX-PL-NBP), from the migration that creates them.
+    c.execute_batch(include_str!("../migrations/20261103000001_nbp_rates.sql")).unwrap();
+    // The PL carry the user declares (D-TAX-PL-DECLARED-CARRY).
+    c.execute_batch(include_str!("../migrations/20261104000001_rust_tax_pl_carry.sql")).unwrap();
+    // The ČNB fixings and their coverage (D-TAX-CZ-CNB).
+    c.execute_batch(include_str!("../migrations/20261105000001_cnb_rates.sql")).unwrap();
     for (table, rows) in tables.as_object().unwrap() {
         for row in rows.as_array().unwrap() {
             let row = row.as_object().unwrap();
@@ -33,42 +41,114 @@ fn install(tables: &Value) -> Connection {
     c
 }
 
+/// A scenario's NBP and ČNB rates and coverage, as given: coverage is never inferred from the rates.
+fn nbp(c: &Connection, s: &Value) {
+    for r in s["cnb"].as_array().into_iter().flatten() {
+        c.execute("INSERT INTO cnb_rates (currency, date, rate) VALUES (?1, ?2, ?3)", rusqlite::params![r[0].as_str(), r[1].as_str(), r[2].as_str()]).unwrap();
+    }
+    for r in s["cnb_coverage"].as_array().into_iter().flatten() {
+        c.execute("INSERT INTO cnb_coverage (from_date, to_date) VALUES (?1, ?2)", rusqlite::params![r[0].as_str(), r[1].as_str()]).unwrap();
+    }
+    for r in s["nbp"].as_array().into_iter().flatten() {
+        c.execute("INSERT INTO nbp_rates (currency, date, rate) VALUES (?1, ?2, ?3)", rusqlite::params![r[0].as_str(), r[1].as_str(), r[2].as_str()]).unwrap();
+    }
+    for r in s["nbp_coverage"].as_array().into_iter().flatten() {
+        c.execute("INSERT INTO nbp_coverage (currency, from_date, to_date) VALUES (?1, ?2, ?3)", rusqlite::params![r[0].as_str(), r[1].as_str(), r[2].as_str()]).unwrap();
+    }
+    // [user, year, costs]: the scenario's user ("self") or another ("other").
+    let me = s["user_id"].as_i64().unwrap();
+    for r in s["pl_carry"].as_array().into_iter().flatten() {
+        let user = if r[0] == "self" { me } else { me + 1 };
+        c.execute("INSERT INTO rust_tax_pl_carry (user_id, year, costs, updated_at) VALUES (?1, ?2, ?3, '2026-09-10 12:00:00')",
+                  rusqlite::params![user, r[1].as_i64(), r[2].as_str()]).unwrap();
+    }
+}
+
+fn rails(s: &Value) -> Outcome {
+    let rails = &s["rails"];
+    match rails.get("csv") {
+        Some(csv) => Outcome::Csv(csv.as_str().unwrap().to_string()),
+        None => Outcome::Refused {
+            reason: rails["refused"]["reason"].as_str().unwrap().to_string(),
+            symbols: rails["refused"]["symbols"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect(),
+        },
+    }
+}
+
+fn divergence(name: &str) -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tax_divergences").join(format!("{name}.csv")) }
+
 #[test]
-fn the_us_crypto_report_is_rails_own_or_states_no_figure() {
+fn the_crypto_report_is_rails_own_or_the_named_divergence() {
     let v = vectors();
     let scenarios = v["scenarios"].as_array().unwrap();
-    assert!(scenarios.len() >= 19);
+    assert!(scenarios.len() >= 147);
+    let write = std::env::var("TAX_DIVERGENCES_WRITE").is_ok();
+    let mut failures = vec![];
     for s in scenarios {
         let name = s["name"].as_str().unwrap();
+        let country = s["country"].as_str().unwrap();
         let c = install(&s["tables"]);
+        nbp(&c, s);
+        let year = s["year"].as_i64().unwrap();
         let today = chrono::NaiveDate::parse_from_str(&s["now"].as_str().unwrap()[..10], "%Y-%m-%d").unwrap();
-        let got = crypto_report(&c, s["user_id"].as_i64().unwrap(), "US", s["year"].as_i64().unwrap() as i32, today);
-        let expect = s["expect"].as_str().unwrap();
-        match expect.strip_prefix("refuses: ") {
-            None => {
-                let rails = &s["rails"];
-                let want = match rails.get("csv") {
-                    Some(csv) => Outcome::Csv(csv.as_str().unwrap().to_string()),
-                    None => Outcome::Refused {
-                        reason: rails["refused"]["reason"].as_str().unwrap().to_string(),
-                        symbols: rails["refused"]["symbols"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect(),
-                    },
-                };
-                assert_eq!(got.unwrap_or_else(|e| panic!("{name}: {e:?}")), want, "{name}");
-            }
-            Some(reason) => match got {
-                Err(FiguresError::NotComputed(m)) => assert!(m.contains(reason), "{name}: {m}"),
-                other => panic!("{name}: Rails states a figure Rust must not ({reason}), got {other:?}"),
-            },
+        let got = crypto_report(&c, s["user_id"].as_i64().unwrap(), country, year as i32,
+                                s["stablecoin_as_fiat"].as_bool().unwrap(), today);
+        // Recorded for its later slice: a jurisdiction this build does not serve states no figure.
+        if !deltabadger::tax::jurisdictions::ported(country, year) {
+            if !matches!(got, Err(FiguresError::NotComputed(_))) { failures.push(format!("{name}: {country} is not ported, got {got:?}")); }
+            continue;
         }
+        let got = match got { Ok(g) => g, Err(e) => { failures.push(format!("{name}: {e:?}")); continue } };
+        let expect = s["expect"].as_str().unwrap();
+        match expect.strip_prefix("diverges: ") {
+            None => if got != rails(s) { failures.push(format!("{name}: not Rails' file\n--- rails\n{:?}\n--- rust\n{got:?}", rails(s))) },
+            Some(id) => {
+                assert!(id.starts_with("D-TAX-"), "{name}: {id}");
+                let Outcome::Csv(csv) = &got else { failures.push(format!("{name}: refused, {got:?}")); continue };
+                if *csv == match rails(s) { Outcome::Csv(r) => r, _ => String::new() } { failures.push(format!("{name}: {id} names a divergence, but Rust wrote Rails' file")); }
+                let path = divergence(name);
+                if write { std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(&path, csv).unwrap(); }
+                match std::fs::read_to_string(&path) {
+                    Ok(want) if want == *csv => {}
+                    Ok(want) => failures.push(format!("{name}: not the reviewed {id} file\n--- reviewed\n{want}\n--- rust\n{csv}")),
+                    Err(e) => failures.push(format!("{name}: {}: {e}", path.display())),
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} of {} scenarios:\n{}", failures.len(), scenarios.len(), failures.join("\n\n"));
+}
+
+/// D-TAX-PL-DECLARED-CARRY: a declaration for a later year is not read, so the 2024 file is the one without it.
+#[test]
+fn a_later_years_declared_carry_is_not_read() {
+    let file = |name: &str| std::fs::read_to_string(divergence(name)).unwrap();
+    assert_eq!(file("pl_declared_future_ignored_2024"), file("pl_carry_two_years_2024"));
+}
+
+/// Every reviewed divergence file belongs to a scenario that says so.
+#[test]
+fn no_divergence_file_is_left_over() {
+    let v = vectors();
+    let named: std::collections::HashSet<String> = v["scenarios"].as_array().unwrap().iter()
+        .filter(|s| s["expect"].as_str().unwrap().starts_with("diverges: ") && deltabadger::tax::jurisdictions::ported(s["country"].as_str().unwrap(), s["year"].as_i64().unwrap())).map(|s| format!("{}.csv", s["name"].as_str().unwrap())).collect();
+    for f in std::fs::read_dir(divergence("x").parent().unwrap()).unwrap() {
+        let f = f.unwrap().file_name().into_string().unwrap();
+        assert!(named.contains(&f), "{f} has no diverging scenario");
     }
 }
 
 #[test]
-fn other_jurisdictions_are_not_ported_yet() {
+fn jurisdictions_not_yet_ported_state_no_figure() {
     let c = install(&serde_json::json!({}));
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
-    assert!(matches!(crypto_report(&c, 1, "DE", 2026, today), Err(FiguresError::NotComputed(m)) if m.contains("jurisdiction DE")));
+    for country in ["FR", "IT", "NL", "CH", "GB", "SE", "IE", "XX"] {
+        assert!(matches!(crypto_report(&c, 1, country, 2026, false, today), Err(FiguresError::NotComputed(m)) if m.contains(&format!("jurisdiction {country}"))), "{country}");
+    }
+    // Poland's regime starts in 2019.
+    assert!(matches!(crypto_report(&c, 1, "PL", 2018, false, today), Err(FiguresError::NotComputed(m)) if m.contains("jurisdiction PL")));
+    // D-TAX-GR-NO-TAX: Greece is served up to 2026 only, until enacted law is reviewed.
+    assert!(matches!(crypto_report(&c, 1, "GR", 2027, false, today), Err(FiguresError::NotComputed(m)) if m.contains("jurisdiction GR")));
 }
 
 /// The Ruby this report mirrors, by content: a change fails here until the port is checked and the vectors recorded again.
@@ -77,7 +157,7 @@ fn the_ruby_being_mirrored_has_not_changed() {
     use sha2::{Digest, Sha256};
     let v = vectors();
     let pinned = v["ported_sources"].as_object().unwrap();
-    assert_eq!(pinned.len(), 10);
+    assert_eq!(pinned.len(), 13);
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     for (path, sum) in pinned {
         let bytes = std::fs::read(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));

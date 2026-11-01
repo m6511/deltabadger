@@ -9,7 +9,7 @@
     "app/models/tax/methods/fifo.rb": "0eaaab43c43312e2c3fd335e301bd76d07e96f7c4e4e69a578042b818825df5e",
     "app/models/tax/methods/acquisition_fee.rb": "297b34726a574b2b7f0ef008998377e16f5becbdabfd8684d0960fc5cae4e968",
     "app/models/tax/methods/return_of_capital.rb": "c65096951e43050cd2d6dd6fb6d11229b578635d285bd4348c702a11797f0ee6",
-    "db/schema.rb": "4ccf4a2a776830d15f5da917eb7b5930801b5c5c6d325b169cc823fd2a9a48d0"
+    "db/schema.rb": "dcc25a60b3b85a2d2218427b46f08ec460e1d4049325927b6fe4b585235b3b16"
   },
   "collisions": [
     {

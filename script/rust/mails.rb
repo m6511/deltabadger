@@ -75,8 +75,30 @@ module Mails
         [{ 'name' => "end_of_funds-#{ukey}-#{bkey}", 'notice' => { 'mail' => 'end_of_funds', 'bot_id' => bot.id } },
          { 'name' => "stopped_by_amount_limit-#{ukey}-#{bkey}", 'notice' => { 'mail' => 'stopped_by_amount_limit', 'bot_id' => bot.id } }] +
           ERRORS.fetch(venue).each_with_index.flat_map do |error, i|
-            %w[notify_about_error stopped_by_error].map { |mail| { 'name' => "#{mail}-#{ukey}-#{bkey}-#{i}", 'notice' => { 'mail' => mail, 'bot_id' => bot.id, 'error' => error } } }
+            %w[notify_about_error notify_about_restart stopped_by_error].map do |mail|
+              { 'name' => "#{mail}-#{ukey}-#{bkey}-#{i}",
+                'notice' => { 'mail' => mail, 'bot_id' => bot.id, 'error' => error, 'delay' => 300 } }
+            end
           end
+      end
+    end
+  end
+
+  # Each bot mail again, for copies of one bot whose owners each switched one alert off (BotAlertsMailer::ALERT_SWITCHES):
+  # Rails delivers none of that alert's mails and every other, and the crate must build the same.
+  def switched_off_cases(seeded)
+    _owner, bots = seeded.fetch('en')
+    copy = 'INSERT INTO bots (type, status, exchange_id, user_id, label, settings, transient_data, created_at, updated_at) ' \
+           'SELECT type, status, exchange_id, ?, label, settings, transient_data, created_at, updated_at FROM bots WHERE id = ?'
+    SettingsController::EMAIL_ALERTS.flat_map do |alert|
+      user = User.new(email: "no-#{alert.dasherize}@example.com", name: 'Quiet', password: 'Correct-horse-9', confirmed_at: Time.current,
+                      setup_completed: true, "email_#{alert}" => false)
+      user.save!(validate: false)
+      id = Bot.connection.insert(Bot.sanitize_sql_array([copy, user.id, bots.fetch('plain').id]))
+      %w[end_of_funds notify_about_error notify_about_restart stopped_by_error stopped_by_amount_limit].map do |mail|
+        notice = { 'mail' => mail, 'bot_id' => id, 'error' => ERRORS.fetch('alpaca').first, 'delay' => 300 }
+        off = BotAlertsMailer::ALERT_SWITCHES.fetch(mail) == :"email_#{alert}?"
+        { 'name' => "#{mail}-#{alert}_off", 'switched_off' => off, 'notice' => notice }
       end
     end
   end
@@ -103,6 +125,7 @@ module Mails
       when 'end_of_funds' then bot.notify_end_of_funds
       when 'stopped_by_amount_limit' then bot.notify_stopped_by_amount_limit
       when 'notify_about_error' then bot.notify_about_error(errors: Bot::ActionJob.humanized_errors(bot, n['error']))
+      when 'notify_about_restart' then bot.notify_about_restart(errors: Bot::ActionJob.humanized_errors(bot, n['error']), delay: n.fetch('delay').seconds)
       when 'stopped_by_error' then bot.notify_stopped_by_error(errors: Bot::ActionJob.humanized_errors(bot, n['error']))
       end
     else
@@ -117,7 +140,7 @@ module Mails
       end
     end
     sent = ActionMailer::Base.deliveries
-    raise "#{c['name']}: #{sent.size} deliveries" unless sent.size == 1
+    raise "#{c['name']}: #{sent.size} deliveries" unless sent.size == (c['switched_off'] ? 0 : 1)
 
     sent.first
   end
@@ -128,7 +151,7 @@ module Mails
     ActionMailer::Base.delivery_method = :test
     ActionMailer::Base.perform_deliveries = true
     ActiveJob::Base.queue_adapter = :inline
-    cases = bot_cases(seeded) + account_cases(seeded)
+    cases = bot_cases(seeded) + travel_to(Time.iso8601('2026-01-01T00:00:00Z')) { switched_off_cases(seeded) } + account_cases(seeded)
     # Every case as a hosted install sends it; then a sample again from a self-hosted install with a named sender.
     variants = cases.map { |c| c.merge('root' => 'https://bot.example.com/', 'sender' => 'noreply@deltabadger.com') } +
                cases.select { |c| c['name'].match?(/-(en|pl)-(plain|markup)(-0)?\z|-in-(en|pl)\z|test_email/) }
@@ -141,8 +164,8 @@ module Mails
         Rails.application.routes.default_url_options = ROOTS.fetch(c['root'])
         c['sender'] ? ENV['NOTIFICATIONS_SENDER'] = c['sender'] : ENV.delete('NOTIFICATIONS_SENDER')
         message = deliver(c)
-        c['rails'] = message.encoded
-        c['envelope'] = { 'from' => message.smtp_envelope_from, 'to' => message.smtp_envelope_to }
+        c['rails'] = message&.encoded
+        c['envelope'] = message && { 'from' => message.smtp_envelope_from, 'to' => message.smtp_envelope_to }
       end
     end
     saved ? ENV['NOTIFICATIONS_SENDER'] = saved : ENV.delete('NOTIFICATIONS_SENDER')

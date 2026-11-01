@@ -4,6 +4,7 @@ el:
         greeting_name: 'Γεια σου %{name},'
         best_html: '<p>Με εκτίμηση,<br>Jan</p>'
         unsubscribe: 'Απεγγραφή'
+        alert_footer_html: 'Μπορείς να απενεργοποιήσεις αυτά τα email στις <a href="%{url}">ρυθμίσεις</a>.'
     test_mailer:
         test_email:
             subject: "Δοκιμαστικό email Deltabadger"

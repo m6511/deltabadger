@@ -35,8 +35,9 @@ pub fn active_job(queue: &Connection, class: &str, gid: &str) -> rusqlite::Resul
     }))
 }
 
-/// An engine-owned install must start its scheduler to refresh stale reference data. Keep structural refusals on
-/// restart; a takeover from Rails also checks freshness. Per-tick staleness checks remain active in both cases.
+/// An engine-owned install keeps only check_install's refusals on restart. A takeover from Rails adds the flip-rule
+/// check and notes stale reference data without refusing it (check_install_at, D-UPGRADE-FRESHNESS-AT-TICK): the scheduler
+/// that refreshes it starts only after the claim. The tick refuses a stale bot in both cases.
 pub fn startup_report(c: &rusqlite::Connection, cipher: &Cipher, now: DateTime<Utc>) -> Result<eligibility::Report, EngineError> {
     if lease::read(c, cipher)?.is_some_and(|v| v["engine"] == "rust") {
         eligibility::check_install(c)
@@ -128,6 +129,10 @@ pub async fn hand_back<F: VenueFactory>(lock: &EngineLock, o: &Opened, factory: 
 
 /// `hand_back` by a process that started at `process_start` (placement::recover_since).
 pub async fn hand_back_since<F: VenueFactory>(lock: &EngineLock, o: &Opened, factory: &F, cipher: &Cipher, clock: &dyn Clock, process_start: DateTime<Utc>) -> Result<usize, EngineError> {
+    // PLAN-B1 r2.1: an install 3.0 created has no Rails to go back to. Refused before anything is written; the marker stays.
+    if crate::app_config::get_plain(&o.primary, lease::CREATED_AT).map_err(EngineError::Data)?.is_some() {
+        return Err(EngineError::Ineligible(vec!["this install was created by Deltabadger 3.0, so there is no earlier version to hand it back to.".into()]));
+    }
     if crate::sync::binance_writer::written(&o.primary)? {
         return Err(EngineError::Ineligible(vec!["Binance A12 identity data permanently requires Rust ownership".into()]));
     }

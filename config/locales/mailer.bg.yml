@@ -4,6 +4,7 @@ bg:
         greeting_name: 'Здравей %{name},'
         best_html: '<p>С поздрави,<br>Ян</p>'
         unsubscribe: 'Отписване'
+        alert_footer_html: 'Можете да изключите тези имейли в <a href="%{url}">настройките</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger – тестов имейл"

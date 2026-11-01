@@ -84,6 +84,7 @@ when 'seed'
   connection.remove_column(:account_transactions, :base_asset_id)
   connection.remove_column(:transactions, :run_identity)
   connection.drop_table(:portfolio_venue_snapshots)
+  connection.remove_columns(:users, :email_low_funds, :email_bot_errors, :email_bot_stopped)
   connection.remove_index(:transactions, column: %i[exchange_id external_id])
   connection.add_index(:transactions, :external_id, unique: true)
   connection.add_index(:tickers, %i[exchange_id base quote], unique: true, name: 'index_exchange_tickers_on_unique_base_and_quote')

@@ -4,6 +4,7 @@ da:
         greeting_name: 'Hej %{name},'
         best_html: '<p>Bedste hilsner,<br>Jan</p>'
         unsubscribe: 'Afmeld'
+        alert_footer_html: 'Du kan slå disse e-mails fra i <a href="%{url}">indstillingerne</a>.'
     test_mailer:
         test_email:
             subject: "Deltabadger testmail"

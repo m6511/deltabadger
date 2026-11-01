@@ -331,6 +331,7 @@ module Pages
     {
       'registration_open' => [{ 'registration_open' => 'true' }, owner],
       'advanced' => [{}, owner('advanced_bots_enabled' => true)],
+      'email_alerts_off' => [{}, owner('email_low_funds' => false, 'email_bot_stopped' => false)],
       'smtp_custom' => [
         { 'smtp_provider' => 'custom_smtp', 'smtp_username' => 'placeholder-user', 'smtp_password' => 'placeholder-password',
           'smtp_host' => 'mail.example.com', 'smtp_port' => '2525' }, owner
@@ -539,6 +540,27 @@ module Pages
     grid['settings_pref_advanced_de'] =
       settings_case(pref.call('update_advanced_bots', { 'enabled' => '1' }, 200, 'path' => '/de/settings/update_advanced_bots'))
 
+    alert = ->(form, status = 200, opts = {}) { pref.call('update_email_alerts', form, status, opts) }
+    grid['settings_pref_email_alert_off'] = settings_case(alert.call({ 'alert' => 'low_funds', 'enabled' => '0' }))
+    grid['settings_pref_email_alert_on'] =
+      settings_case(alert.call({ 'alert' => 'bot_stopped', 'enabled' => '1' }), user: owner('email_bot_stopped' => false))
+    grid['settings_pref_email_alert_unchanged'] = settings_case(alert.call({ 'alert' => 'bot_errors', 'enabled' => '1' }))
+    grid['settings_pref_email_alert_no_state'] = settings_case(alert.call({ 'alert' => 'bot_errors' }))
+    grid['settings_pref_email_alert_de'] =
+      settings_case(alert.call({ 'alert' => 'bot_errors', 'enabled' => '0' }, 200, 'path' => '/de/settings/update_email_alerts'))
+    query = ->(string) { { 'path' => "/settings/update_email_alerts?#{string}" } }
+    grid['settings_pref_email_alert_query'] =
+      settings_case(alert.call({ 'alert' => 'low_funds', 'enabled' => '0' }, 200, query.call('alert=bot_stopped&enabled=1')),
+                    user: owner('email_bot_stopped' => false))
+    grid['settings_pref_email_alert_query_list'] =
+      settings_case(alert.call({ 'alert' => 'low_funds', 'enabled' => '0' }, 422, query.call('alert[]=admin')))
+    grid['settings_pref_email_alert_query_list_state'] =
+      settings_case(alert.call({ 'alert' => 'low_funds', 'enabled' => '1' }, 200, query.call('enabled[]=1')))
+    grid['settings_pref_email_alert_unknown'] = settings_case(alert.call({ 'alert' => 'admin', 'enabled' => '0' }, 422))
+    grid['settings_pref_email_alert_missing'] = settings_case(alert.call({ 'enabled' => '0' }, 422))
+    grid['settings_pref_email_alert_csrf'] =
+      settings_case(alert.call({ 'alert' => 'low_funds', 'enabled' => '0' }, 302, 'csrf' => 'none'))
+
     grid['settings_pref_registration_on'] = settings_case(pref.call('update_registration', { 'registration_open' => '1' }, 200))
     grid['settings_pref_registration_off'] =
       settings_case(pref.call('update_registration', { 'registration_open' => '0' }, 200)).merge('app_configs' => { 'registration_open' => 'true' })
@@ -593,6 +615,8 @@ module Pages
       on_invalid.call(pref.call('update_advanced_bots', { 'enabled' => '1' }, 422, raised))
     grid['settings_pref_invalid_stored_advanced_unchanged'] =
       on_invalid.call(pref.call('update_advanced_bots', { 'enabled' => '0' }, 422, raised))
+    grid['settings_pref_invalid_stored_email_alert'] =
+      on_invalid.call(pref.call('update_email_alerts', { 'alert' => 'low_funds', 'enabled' => '0' }, 422, raised))
 
     # The personal REST token: rust/tests/pages.rs compares its random values as placeholders, once each side's revealed
     # token is that side's one live token.

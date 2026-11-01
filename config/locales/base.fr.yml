@@ -123,6 +123,7 @@ fr:
             no_keys: 'Aucune clé API pour l’instant.'
             permissions: 'Autorisations'
             provider: 'Fournisseur'
+            email_alerts: 'Alertes par e-mail'
         wash_sale:
             title: "Protection des pertes déductibles"
             sentence_html: "Après une vente à perte, attendre %{select_html} avant de racheter"
@@ -148,6 +149,16 @@ fr:
             check_now: 'Rechercher des mises à jour'
             checking: 'Recherche…'
             check_failed: 'Impossible de rechercher les mises à jour.'
+        email_alerts:
+            low_funds:
+                title: 'Fonds insuffisants'
+                hint: 'Quand un compte d’exchange arrive à court de ce que vos bots dépensent. Au plus une fois par jour.'
+            bot_errors:
+                title: 'Erreurs de bot'
+                hint: 'Quand un ordre échoue et que le bot va réessayer.'
+            bot_stopped:
+                title: 'Bot arrêté'
+                hint: 'Quand un bot s’arrête après une erreur qu’il ne peut pas surmonter, ou après avoir atteint sa limite de montant.'
         advanced_bots:
             title: Bots avancés
             toggle_label: Afficher les bots avancés

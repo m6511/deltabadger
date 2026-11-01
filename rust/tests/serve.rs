@@ -78,9 +78,12 @@ fn serve_sends_the_first_visitor_of_an_install_with_no_admin_user_to_setup() {
 fn serve_needs_the_secret_key_base() {
     let (dir, opened, _) = common::install();
     drop(opened);
-    let out = serve_command(dir.path(), free_port()).env_remove("SECRET_KEY_BASE").output().unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("SECRET_KEY_BASE is not set"), "{}", String::from_utf8_lossy(&out.stderr));
+    let (port, log) = (free_port(), tempfile::NamedTempFile::new().unwrap());
+    let mut server = Child(serve_command(dir.path(), port).env_remove("SECRET_KEY_BASE").stdout(Stdio::null()).stderr(log.reopen().unwrap()).spawn().unwrap());
+    let (ended, page) = server.refused_on(port);
+    assert_eq!(ended.code(), Some(0));
+    let said = std::fs::read_to_string(log.path()).unwrap();
+    assert!(said.contains("SECRET_KEY_BASE is not set") && page.contains("SECRET_KEY_BASE is not set"), "{said}\n{page}");
 }
 
 #[test]
@@ -88,7 +91,8 @@ fn serve_answers_on_its_port_and_holds_the_engine_lock() {
     let (dir, opened, _) = common::install(); // seeds an admin user
     drop(opened);
     let port = free_port();
-    let mut server = serve_command(dir.path(), port).stderr(Stdio::piped()).spawn().unwrap();
+    // The secret the install was seeded with (seed::cipher): another one is refused (PLAN-B2 r2.4).
+    let mut server = serve_command(dir.path(), port).env("SECRET_KEY_BASE", "engine-test-secret").stderr(Stdio::piped()).spawn().unwrap();
     let started = Instant::now();
     let answer = loop {
         if let Some(answer) = http_get(port, "/up") { break answer; }
@@ -420,6 +424,24 @@ impl Drop for Child {
 }
 
 impl Child {
+    /// A refused `serve` on `port` (PLAN-B2 r1.0): waits up to 30 s for its refusal page (`/ui-ready` 200 while `/up` is
+    /// 503), reads its page at `/`, stops it with SIGTERM and returns how it ended (0: stopped as asked) and the page.
+    fn refused_on(&mut self, port: u16) -> (std::process::ExitStatus, String) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(self.0.try_wait().unwrap().is_none(), "serve ended instead of showing its refusal page");
+            assert!(Instant::now() < deadline, "no refusal page within 30 s");
+            if http_get(port, "/ui-ready").is_some_and(|a| a.starts_with("HTTP/1.1 200")) {
+                assert!(http_get(port, "/up").is_some_and(|a| a.starts_with("HTTP/1.1 503")), "a refused serve is not up");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let page = http_get(port, "/").expect("the refusal page");
+        assert!(Command::new("kill").args(["-TERM", &self.0.id().to_string()]).status().unwrap().success());
+        (self.ended_within(Duration::from_secs(20)).expect("the refusal page stops on SIGTERM"), page)
+    }
+
     /// How it ended, if it ends within `patience`. Never waits longer.
     fn ended_within(&mut self, patience: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + patience;
@@ -529,11 +551,11 @@ fn the_executable_serves_the_bot_pages_of_an_install_the_engine_accepts_and_refu
     assert!(said("serve.log").contains(&format!("bot {basket} (scheduled)")) && said("serve.log").contains("rebalance_pending in phase"), "{}", said("serve.log"));
     assert!(!up_within(port, Duration::from_secs(2)), "and the pages went with it");
 
-    // Started on that install, the executable does not come up: refused before anything is served.
+    // Started on that install, the executable does not trade: refused before anything is claimed, it shows why.
     let out = std::fs::File::create(logs.path().join("again.log")).unwrap();
-    let mut again = Child(serve_command(dir.path(), free_port()).env("SECRET_KEY_BASE", "engine-test-secret").stdout(out.try_clone().unwrap()).stderr(out).spawn().unwrap());
-    let refused = again.ended_within(Duration::from_secs(30)).unwrap_or_else(|| panic!("serve neither refused nor ended within 30 s: {}", said("again.log")));
-    assert_eq!(refused.code(), Some(1), "{}", said("again.log"));
+    let again_port = free_port();
+    let mut again = Child(serve_command(dir.path(), again_port).env("SECRET_KEY_BASE", "engine-test-secret").stdout(out.try_clone().unwrap()).stderr(out).spawn().unwrap());
+    assert_eq!(again.refused_on(again_port).0.code(), Some(0), "{}", said("again.log"));
     assert!(said("again.log").contains(&format!("bot {basket} (scheduled)")) && said("again.log").contains("rebalance_pending in phase"), "{}", said("again.log"));
 }
 
@@ -2832,7 +2854,7 @@ fn serve_logs_no_webhook_token() {
     let c = seed_signal_bot(dir.path());
     c.execute_batch("CREATE TRIGGER hook_boom BEFORE UPDATE ON bot_signals WHEN OLD.token = 'tok-other' BEGIN SELECT RAISE(ABORT, 'boom'); END;").unwrap();
     let port = free_port();
-    let mut server = serve_command(dir.path(), port).stderr(Stdio::piped()).spawn().unwrap();
+    let mut server = serve_command(dir.path(), port).env("SECRET_KEY_BASE", "engine-test-secret").stderr(Stdio::piped()).spawn().unwrap();
     let started = Instant::now();
     while http_get(port, "/up").is_none() {
         assert!(started.elapsed() < Duration::from_secs(10) && server.try_wait().unwrap().is_none(), "serve did not come up");
@@ -2943,9 +2965,10 @@ fn serve_admits_an_abandoned_rebalance_only_when_halted_for_resume() {
     let row = seed::insert_row(&opened.primary, &seeded, id, seeded.btc, &serde_json::json!({"created_at":"2026-09-01 10:00:01","external_status":4,"side":0,"external_id":"abandoned","amount":"0.001","price":"64000"}));
     opened.primary.execute("UPDATE transactions SET transaction_type='REBALANCE' WHERE id=?1", [row]).unwrap();
     let port = free_port();
-    let before = serve_command(dir.path(), port).env("SECRET_KEY_BASE", "engine-test-secret").output().unwrap();
-    assert!(!before.status.success());
-    assert!(String::from_utf8_lossy(&before.stderr).contains("abandoned REBALANCE"));
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let mut before = Child(serve_command(dir.path(), port).env("SECRET_KEY_BASE", "engine-test-secret").stdout(Stdio::null()).stderr(log.reopen().unwrap()).spawn().unwrap());
+    assert_eq!(before.refused_on(port).0.code(), Some(0));
+    assert!(std::fs::read_to_string(log.path()).unwrap().contains("abandoned REBALANCE"));
     opened.primary.execute("UPDATE bots SET transient_data=json_set(transient_data,'$.rebalance_pending',json('{\"phase\":\"ambiguous\"}')) WHERE id=?1", [id]).unwrap();
     let mut server = Child(serve_command(dir.path(), port).env("SECRET_KEY_BASE", "engine-test-secret").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     let started = Instant::now();
@@ -3003,4 +3026,57 @@ async fn the_signal_wizard_starts_a_bot_on_bybit() {
     assert_eq!((rule.0, rule.1), (0, 1), "the edited rule: a percentage buy {rule:?}");
     assert!(rule.2.contains("25"), "{rule:?}");
     assert!(deltabadger::engine::eligibility::check_install(c).unwrap().eligible.contains(&bot), "the engine runs it");
+}
+
+/// T7 (PLAN-B1 §7, r6.1): `serve` on an empty STORAGE_DIR creates the install and opens on /setup: the seeds are there,
+/// exactly two database files (no cache, no cable), the marker and a Rust lease. A second start creates, migrates and
+/// seeds nothing.
+#[test]
+fn serve_on_an_empty_storage_dir_creates_the_install_and_a_second_start_creates_nothing() {
+    let (dir, logs) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let databases = || -> Vec<String> {
+        std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.ends_with(".sqlite3")).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    };
+    let state = || {
+        let c = rusqlite::Connection::open(dir.path().join("production.sqlite3")).unwrap();
+        let lease = deltabadger::lease::read(&c, &common::seed::cipher()).unwrap().expect("a lease row");
+        assert_eq!(lease["engine"], "rust");
+        let one = |sql: &str| -> String { c.query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap().unwrap_or_default() };
+        [
+            one("SELECT group_concat(version || '@' || applied_at, ',') FROM (SELECT * FROM rust_schema_migrations ORDER BY version)"),
+            one("SELECT value FROM app_configs WHERE key = 'rust_created_at'"),
+            one("SELECT value FROM app_configs WHERE key = 'rust_taken_over_at'"),
+            one("SELECT count(*) || '/' || max(id) || '/' || max(created_at) FROM exchanges"),
+            one("SELECT count(*) || '/' || max(id) || '/' || max(updated_at) FROM assets"),
+            one("SELECT count(*) || '/' || max(id) || '/' || max(updated_at) FROM tickers"),
+            one("SELECT count(*) || '/' || max(id) FROM indices"),
+            one("SELECT CAST(count(*) AS TEXT) FROM users"),
+        ]
+    };
+    let stop = |mut server: Child| {
+        Command::new("kill").args(["-TERM", &server.0.id().to_string()]).status().unwrap();
+        assert!(server.ended_within(Duration::from_secs(30)).is_some_and(|s| s.success()), "serve stops on SIGTERM");
+    };
+
+    let (server, port) = serving(dir.path(), &logs.path().join("first.log"));
+    let (status, _, _) = http(port, "GET", "/setup", None, None);
+    assert_eq!(status, 200, "/setup renders");
+    let (status, _, _) = http(port, "GET", "/bots", None, None);
+    assert_eq!(status, 302, "every page sends the first visitor to /setup");
+    assert_eq!(databases(), ["production.sqlite3", "production_queue.sqlite3"], "two files, no cache or cable");
+    let first = state();
+    assert!(!first[1].is_empty() && first[1] == first[2], "the marker, and the first claim continued the bootstrap's ownership");
+    assert!(first[3].starts_with("15/15/") && !first[5].starts_with("0/"), "seeded: {first:?}");
+    assert_eq!(first[7], "0", "no user");
+    stop(server);
+    assert!(std::fs::read_to_string(logs.path().join("first.log")).unwrap().contains("set up a new install at "), "the first start says it");
+
+    let said = logs.path().join("second.log");
+    let (server, port) = serving(dir.path(), &said);
+    assert_eq!(http(port, "GET", "/setup", None, None).0, 200);
+    stop(server);
+    let log = std::fs::read_to_string(&said).unwrap();
+    assert!(!log.contains("applied Rust migration") && !log.contains("set up a new install") && log.contains("took over (AfterCrash)"), "{log}");
+    assert_eq!(databases(), ["production.sqlite3", "production_queue.sqlite3"], "nothing created");
+    assert_eq!(state(), first, "nothing migrated or seeded");
 }

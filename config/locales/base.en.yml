@@ -123,6 +123,7 @@ en:
             no_keys: 'No API keys yet.'
             permissions: 'Permissions'
             provider: 'Provider'
+            email_alerts: 'Email alerts'
         wash_sale:
             title: "Wash sale protection"
             sentence_html: "Avoid wash sales by waiting %{select_html} after selling at a loss"
@@ -148,6 +149,16 @@ en:
             check_now: 'Check for updates'
             checking: 'Checking…'
             check_failed: 'Could not check for updates.'
+        email_alerts:
+            low_funds:
+                title: 'Low funds'
+                hint: 'When an exchange account is running out of what your bots spend. At most once a day.'
+            bot_errors:
+                title: 'Bot errors'
+                hint: 'When an order fails and the bot will try again.'
+            bot_stopped:
+                title: 'Bot stopped'
+                hint: 'When a bot stops after an error it can''t recover from, or after reaching its amount limit.'
         advanced_bots:
             title: Advanced Bots
             toggle_label: Show advanced bots

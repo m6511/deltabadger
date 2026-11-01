@@ -4,6 +4,7 @@ es:
         greeting_name: '¡Hola %{name}!'
         best_html: '<p>Saludos,<br>Jan</p>'
         unsubscribe: 'Cancelar suscripción'
+        alert_footer_html: 'Puede desactivar estos correos en la <a href="%{url}">configuración</a>.'
     test_mailer:
         test_email:
             subject: "Correo de prueba de Deltabadger"

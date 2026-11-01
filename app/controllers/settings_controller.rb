@@ -11,6 +11,9 @@ class SettingsController < ApplicationController
                 enabled: :enabled_rest_tool_names }
   }.freeze
 
+  # A switch per kind of bot alert mail, each a users column `email_<alert>` that BotAlertsMailer reads when it sends.
+  EMAIL_ALERTS = %w[low_funds bot_errors bot_stopped].freeze
+
   helper_method :connected_applications
 
   before_action :authenticate_user!
@@ -424,6 +427,18 @@ class SettingsController < ApplicationController
   def update_advanced_bots
     current_user.update!(advanced_bots_enabled: params[:enabled] == '1')
     render turbo_stream: turbo_stream.replace('advanced_bots', partial: 'settings/widgets/advanced_bots')
+  end
+
+  def update_email_alerts
+    alert = params[:alert]
+
+    unless EMAIL_ALERTS.include?(alert)
+      head :unprocessable_entity
+      return
+    end
+
+    current_user.update!("email_#{alert}" => params[:enabled] == '1')
+    render turbo_stream: turbo_stream.replace("email_#{alert}", partial: 'settings/widgets/email_alert', locals: { alert: })
   end
 
   def update_client_tool_permissions

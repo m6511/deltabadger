@@ -123,6 +123,7 @@ da:
             no_keys: 'Ingen API-nøgler endnu.'
             permissions: 'Tilladelser'
             provider: 'Udbyder'
+            email_alerts: 'E-mailbeskeder'
         wash_sale:
             title: "Beskyttelse af tabsfradrag"
             sentence_html: "Køb ikke tilbage i %{select_html} efter et salg med tab"
@@ -148,6 +149,16 @@ da:
             check_now: "Søg efter opdateringer"
             checking: "Søger…"
             check_failed: "Kunne ikke søge efter opdateringer."
+        email_alerts:
+            low_funds:
+                title: 'Lav saldo'
+                hint: 'Når en børskonto er ved at løbe tør for det, dine bots bruger. Højst én gang om dagen.'
+            bot_errors:
+                title: 'Botfejl'
+                hint: 'Når en ordre fejler, og botten prøver igen.'
+            bot_stopped:
+                title: 'Bot stoppet'
+                hint: 'Når en bot stopper efter en fejl, den ikke selv kan komme over, eller efter at have nået sin beløbsgrænse.'
         advanced_bots:
             title: Avancerede bots
             toggle_label: Vis avancerede bots

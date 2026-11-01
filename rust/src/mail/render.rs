@@ -36,7 +36,8 @@ pub struct Recipient { pub email: String, pub name: String, pub locale: &'static
 /// `users.locale` as ApplicationMailer#set_locale reads it: NULL, or a value Rails does not know, is the default.
 pub fn user_locale(stored: Option<&str>) -> &'static str { stored.and_then(locale::known).unwrap_or(locale::DEFAULT) }
 
-fn layout(urls: &Urls, body: &str) -> String {
+/// `footer` is the bot alerts' line after the spacer, empty for every other mail.
+fn layout(urls: &Urls, body: &str, footer: &str) -> String {
     format!(r#"<!DOCTYPE html>
 <html>
   <head>
@@ -64,7 +65,7 @@ fn layout(urls: &Urls, body: &str) -> String {
       {body}
 
       <p style="margin: 5em 0 1em 0;"></p>
-    </div>
+{footer}    </div>
   </body>
 </html>
 "#, root = escape(&urls.root))
@@ -76,7 +77,14 @@ fn opening(locale: &str, subject: &str, name: &str) -> String {
 }
 
 fn message(from: &str, reply_to: bool, to: &str, subject: String, urls: &Urls, body: &str) -> Message {
-    Message { from: from.to_string(), reply_to: reply_to.then(|| from.to_string()), to: to.to_string(), subject, html: layout(urls, body) }
+    Message { from: from.to_string(), reply_to: reply_to.then(|| from.to_string()), to: to.to_string(), subject, html: layout(urls, body, "") }
+}
+
+/// A BotAlertsMailer mail: the layout ends with where the user turns these mails off (`settings_account_url`).
+fn alert(from: &str, to: &Recipient, subject: String, urls: &Urls, body: &str) -> Message {
+    let url = urls.url(to.locale, "/settings/account");
+    let footer = format!("      <p style=\"font-size: 0.85em; color: #888;\">{}</p>\n", i18n::t(to.locale, "mailer.alert_footer_html", &[("url", Arg::Text(&url))]));
+    Message { from: from.to_string(), reply_to: None, to: to.email.clone(), subject, html: layout(urls, body, &footer) }
 }
 
 /// BotAlertsMailer#end_of_funds. `exchange_name` as stored, `quote` the quote asset's symbol.
@@ -84,7 +92,7 @@ pub fn end_of_funds(from: &str, urls: &Urls, to: &Recipient, exchange_name: &str
     let args = [("exchange_name", Arg::Text(exchange_name)), ("quote", Arg::Text(quote))];
     let subject = i18n::text(to.locale, "bot_alerts_mailer.end_of_funds.subject", &args);
     let body = format!("{}{}\n", opening(to.locale, &subject, &to.name), i18n::t(to.locale, "bot_alerts_mailer.end_of_funds.template_html", &args));
-    message(from, false, &to.email, subject, urls, &body)
+    alert(from, to, subject, urls, &body)
 }
 
 /// BotAlertsMailer#notify_about_error (`stopped` false) and #stopped_by_error (`stopped` true). `error` is the sentence
@@ -97,7 +105,27 @@ pub fn failure(from: &str, urls: &Urls, to: &Recipient, stopped: bool, label: &s
                        &[("label", Arg::Text(label)), ("exchange_name", Arg::Text(&upcased)), ("errors", Arg::Text(error))]);
     // stopped_by_error.html.erb has no line feed at its end; notify_about_error.html.erb has one.
     let body = format!("{}{html}{}", opening(to.locale, &subject, &to.name), if stopped { "" } else { "\n" });
-    message(from, false, &to.email, subject, urls, &body)
+    alert(from, to, subject, urls, &body)
+}
+
+/// BotAlertsMailer#notify_about_restart, including its switch at build time. This renders the Rails mail action;
+/// the engine does not raise a restart notice.
+pub fn for_restart(c: &Connection, bot_id: i64, error: &str, restart_at: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>, from: &str, urls: &Urls) -> Result<Option<Message>, EngineError> {
+    if !switched_on(c, bot_id, "email_bot_errors")? { return Ok(None) }
+    type Row = (Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = c.query_row(
+        "SELECT b.label, u.email, u.name, u.locale, e.name, e.type FROM bots b JOIN users u ON u.id = b.user_id \
+         LEFT JOIN exchanges e ON e.id = b.exchange_id WHERE b.id = ?1",
+        [bot_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional()?;
+    let Some((label, email, name, stored_locale, Some(exchange_name), exchange_type)) = row else { return Ok(None) };
+    let to = Recipient { email, name: bounded(&name.unwrap_or_default(), NAME_LIMIT), locale: user_locale(stored_locale.as_deref()) };
+    let label = bounded(&label.unwrap_or_default(), NAME_LIMIT);
+    let error = humanize_error(exchange_type.as_deref().unwrap_or_default(), &exchange_name, to.locale, &bounded(error, ERROR_LIMIT));
+    let delay = crate::web::format::distance_of_time_in_words((restart_at - now).num_milliseconds() as f64 / 1000.0, now.min(restart_at), to.locale);
+    let subject = i18n::text(to.locale, "bot_alerts_mailer.notify_about_restart.subject", &[]);
+    let html = i18n::t(to.locale, "bot_alerts_mailer.notify_about_restart.template_html",
+                      &[("delay", Arg::Text(&delay)), ("label", Arg::Text(&label)), ("exchange_name", Arg::Text(&exchange_name.to_uppercase())), ("errors", Arg::Text(&error))]);
+    Ok(Some(alert(from, &to, subject.clone(), urls, &format!("{}{html}\n", opening(to.locale, &subject, &to.name)))))
 }
 
 /// BotAlertsMailer#stopped_by_amount_limit. `amount` is `quote_amount_limit.to_s`.
@@ -106,7 +134,7 @@ pub fn stopped_by_amount_limit(from: &str, urls: &Urls, to: &Recipient, label: &
     let html = i18n::t(to.locale, "bot_alerts_mailer.stopped_by_amount_limit.template_html",
                        &[("label", Arg::Text(label)), ("amount", Arg::Text(amount)), ("quote", Arg::Text(quote))]);
     let body = format!("{}{html}", opening(to.locale, &subject, &to.name));
-    message(from, false, &to.email, subject, urls, &body)
+    alert(from, to, subject, urls, &body)
 }
 
 /// BotAlertsMailer#stopped_by_base_amount_limit. `amount` is D-6D-1's (`base_cap_amount`), `base` the one asset's symbol.
@@ -115,7 +143,7 @@ pub fn stopped_by_base_amount_limit(from: &str, urls: &Urls, to: &Recipient, lab
     let html = i18n::t(to.locale, "bot_alerts_mailer.stopped_by_base_amount_limit.template_html",
                        &[("label", Arg::Text(label)), ("amount", Arg::Text(amount)), ("base", Arg::Text(base))]);
     let body = format!("{}{html}", opening(to.locale, &subject, &to.name));
-    message(from, false, &to.email, subject, urls, &body)
+    alert(from, to, subject, urls, &body)
 }
 
 /// D-6D-1: the base cap in the mail at the base's precision (`decimals[:base]`, 8 without one), zeros trimmed. Rails hands
@@ -240,15 +268,32 @@ fn ruby_to_s(v: Option<&Value>) -> String {
     }
 }
 
+/// BotAlertsMailer::ALERT_SWITCHES for the notices the engine produces: the users column each one's mail follows.
+pub fn notice_switch(notice: &Notice) -> &'static str {
+    match notice {
+        Notice::EndOfFunds { .. } => "email_low_funds",
+        Notice::Error { .. } => "email_bot_errors",
+        Notice::StoppedByError { .. } | Notice::StoppedByAmountLimit | Notice::StoppedByBaseAmountLimit => "email_bot_stopped",
+    }
+}
+
+/// The bot owner's `switch` column (one of `notice_switch`'s), as it is now. A bot or owner that is gone has none on.
+pub fn switched_on(c: &Connection, bot_id: i64, switch: &'static str) -> Result<bool, EngineError> {
+    let on: Option<bool> = c.query_row(&format!("SELECT u.{switch} FROM bots b JOIN users u ON u.id = b.user_id WHERE b.id = ?1"), [bot_id], |r| r.get(0)).optional()?;
+    Ok(on == Some(true))
+}
+
 /// The mail a marker on bot `bot_id` asks for, from the rows as they are now. None when Rails would send nothing: the
-/// bot's user, its venue or (where the mail names it) its quote asset is gone.
+/// bot's user, its venue or (where the mail names it) its quote asset is gone, or the user turned that alert off
+/// (BotAlertsMailer::ALERT_SWITCHES).
 /// A bot whose label is blank is named by Rails the first time it loads the row; here the label is used as stored
 /// (a listed divergence that needs a bot Rails never loaded).
 pub fn for_notice(c: &Connection, bot_id: i64, notice: &Notice, from: &str, urls: &Urls) -> Result<Option<Message>, EngineError> {
+    if !switched_on(c, bot_id, notice_switch(notice))? { return Ok(None) }
     type Row = (Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
     let row: Option<Row> = c.query_row(
-        "SELECT b.label, b.settings, u.email, u.name, u.locale, e.name, e.type, json_extract(b.transient_data, '$.' || ?2) FROM bots b JOIN users u ON u.id = b.user_id \
-         LEFT JOIN exchanges e ON e.id = b.exchange_id WHERE b.id = ?1",
+        "SELECT b.label, b.settings, u.email, u.name, u.locale, e.name, e.type, json_extract(b.transient_data, '$.' || ?2) FROM bots b \
+                  JOIN users u ON u.id = b.user_id LEFT JOIN exchanges e ON e.id = b.exchange_id WHERE b.id = ?1",
         params![bot_id, crate::engine::notice::BASE_LIMIT], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).optional()?;
     let Some((label, settings, Some(email), name, stored_locale, exchange_name, exchange_type, base_marker)) = row else { return Ok(None) };
     let settings: Value = serde_json::from_str(&settings).map_err(|e| EngineError::Data(format!("bot {bot_id}: settings: {e}")))?;

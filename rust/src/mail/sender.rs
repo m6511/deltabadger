@@ -6,8 +6,9 @@
 //! - **It never holds the engine's thread.** Every SQLite statement of the sender runs on tokio's blocking pool, on the
 //!   sender's own connection (as the web's `App::db` does): a locked database makes a pool thread wait, not the runtime.
 //!   A look reads the markers of at most `batch` bots and goes round; between two mails the sender yields.
-//! - With no usable SMTP settings (smtp::Settings::current is Err) it says so once, with the reason, and sends nothing:
-//!   the markers stay, and wait out their week. Settings are read again for every mail, so mail configured later goes out.
+//! - Disabled alerts are discarded even without SMTP settings. With no usable SMTP settings (smtp::Settings::current
+//!   is Err) it says so once, with the reason, and sends nothing: enabled markers stay, and wait out their week.
+//!   Settings are read again for every mail, so mail configured later goes out.
 //! - At least once: a mail whose delivery was cut off after the server had it is sent again. Never zero, while the
 //!   marker is under seven days old.
 //! - Anything that fails is tried again after 3, 18, 83 and 258 s (ApplicationMailDeliveryJob's waits), then hourly: a
@@ -220,13 +221,18 @@ fn configuration(c: &Connection, cipher: &Cipher, env: &smtp::Env, trust_root: O
 
 /// Everything a delivery needs, from the database, in one visit to the blocking pool.
 fn prepare(c: &Connection, cipher: &Cipher, marker: &Pending, env: &smtp::Env, urls: &render::Urls, trust_root: Option<Vec<u8>>, now: chrono::DateTime<chrono::Utc>) -> Prepared {
+    match render::switched_on(c, marker.bot_id, render::notice_switch(&marker.notice)) {
+        Ok(true) => {},
+        Ok(false) => return Prepared::Unsendable("its bot's owner is gone, or the user turned this alert off".into()),
+        Err(e) => return Prepared::Later(format!("its alert switch could not be read ({e:?})")),
+    }
     let (from, settings) = match configuration(c, cipher, env, trust_root) {
         Ok(found) => found,
         Err(reason) => return Prepared::NotConfigured(reason),
     };
     let message = match render::for_notice(c, marker.bot_id, &marker.notice, &from, urls) {
         Ok(Some(message)) => message,
-        Ok(None) => return Prepared::Unsendable("its bot's user, venue or quote asset is gone".into()),
+        Ok(None) => return Prepared::Unsendable("its bot's user, venue or quote asset is gone, or the user turned this alert off".into()),
         Err(e) => return Prepared::Later(format!("it could not be rendered ({e:?})")),
     };
     let id = format!("<{}@{}>", uuid::Uuid::new_v4().simple(), settings.domain);

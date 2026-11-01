@@ -78,9 +78,10 @@ fn run_refuses_a_kraken_bot_without_a_key_a_live_key_and_an_unreadable_key_and_c
     let (dir, o, s) = common::install_alpaca();
     seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2026-09-01 10:00:00"));
     drop(o);
+    // A key no secret reads is a wrong secret: refused before preflight (PLAN-B2 r2.4), with C9.
     let out = cli(dir.path(), &["run"]).env("SECRET_KEY_BASE", "another-instance").output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("api key unreadable"), "{}", stderr(&out));
+    assert!(stderr(&out).contains(WRONG_SECRET), "{}", stderr(&out));
     assert!(lease_of(dir.path()).is_none());
 }
 
@@ -123,9 +124,11 @@ fn run_takes_over_and_stops_cleanly_on_sigterm_then_handback_returns_the_install
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert_eq!(status.code(), Some(0));
+    let before = files_of(dir.path());
     let wrong = cli(dir.path(), &["handback"]).env("SECRET_KEY_BASE", "another-instance").output().unwrap();
     assert_eq!(wrong.status.code(), Some(1), "a wrong secret is refused before anything is written");
-    assert_eq!(lease_of(dir.path()).unwrap()["engine"], "rust", "the row is untouched and still Rust's");
+    assert!(stderr(&wrong).contains(WRONG_SECRET), "{}", stderr(&wrong));
+    assert_eq!(files_of(dir.path()), before, "the lease row is untouched and still Rust's");
     let out = cli(dir.path(), &["handback"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let row = lease_of(dir.path()).unwrap();
@@ -215,16 +218,70 @@ fn serve_takes_the_install_over_holds_the_one_lock_until_sigterm_stops_both_then
     assert_eq!((row["engine"].as_str(), row["handed_back"].as_bool()), (Some("none"), Some(true)));
 }
 
+/// A refused `serve` (PLAN-B2 r1.0): what it printed, the page's answer for `/`, `/health-check`, `/up` and
+/// `/ui-ready`, and its exit status once SIGTERM stops it. While the page is up the install's engine lock is free.
+struct Refused { stderr: String, page: String, health: String, up: String, ready: String, lock_free: bool, status: Option<i32> }
+
+fn refused(dir: &Path, cmd: &mut Command) -> Refused {
+    use std::io::Read;
+    let port = free_port();
+    let mut child = Running(cmd.env("PORT", port.to_string()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let ready = loop {
+        if let Some(answer) = http_get(port, "/ui-ready") { break answer; }
+        assert!(child.0.try_wait().unwrap().is_none(), "serve exited instead of showing the refusal page");
+        assert!(std::time::Instant::now() < deadline, "no refusal page after 20 s");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let (page, health, up) = (http_get(port, "/").unwrap(), http_get(port, "/health-check").unwrap(), http_get(port, "/up").unwrap());
+    let lock_free = std::fs::File::open(dir.join(".engine.lock")).unwrap().try_lock().is_ok();
+    // A client that sent half a request and keeps the socket open must not hold the stop (at most 5 s).
+    let mut half = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    std::io::Write::write_all(&mut half, b"GET / HTTP/1.1\r\nHost: loc").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let stopping = std::time::Instant::now();
+    assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
+    while child.0.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline + std::time::Duration::from_secs(20), "the refusal page did not stop on SIGTERM");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(stopping.elapsed() < std::time::Duration::from_secs(10), "a half-sent request held the stop for {:?}", stopping.elapsed());
+    drop(half);
+    let mut stderr = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    Refused { stderr, page, health, up, ready, lock_free, status: child.0.wait().unwrap().code() }
+}
+
+fn http_get(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok()?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").ok()?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).ok()?;
+    Some(answer)
+}
+
+/// Every file of the install, byte for byte. Not writes: the lock file, the -shm index any open of a WAL database makes
+/// (no data), and an empty -wal.
+fn files_of(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let incidental = |p: &Path| p.ends_with(".engine.lock") || p.extension().is_some_and(|e| e == "sqlite3-shm")
+        || (p.extension().is_some_and(|e| e == "sqlite3-wal") && p.metadata().is_ok_and(|m| m.len() == 0));
+    std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_file() && !incidental(p))
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap())).collect()
+}
+
 #[test]
 fn serve_refusals_come_before_the_claim() {
-    // What the engine refuses: a Kraken bot without a key.
+    // What the engine refuses: a Kraken bot without a key. The refusal page says why; nothing is claimed.
     let (dir, o, s) = common::install();
     seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2026-09-01 10:00:00"));
     o.primary.execute("DELETE FROM api_keys", []).unwrap();
     drop(o);
-    let out = finished(cli(dir.path(), &["serve"]).env("PORT", free_port().to_string()));
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("no Kraken API key"), "{}", stderr(&out));
+    let r = refused(dir.path(), &mut cli(dir.path(), &["serve"]));
+    assert_eq!(r.status, Some(0), "stopped as asked");
+    assert!(r.stderr.contains("no Kraken API key"), "{}", r.stderr);
+    assert!(r.page.starts_with("HTTP/1.1 503") && r.page.contains("no Kraken API key") && r.page.contains("didn't start trading"), "{}", r.page);
     assert!(lease_of(dir.path()).is_none(), "nothing claimed");
 
     // What the web refuses: a port already taken.
@@ -244,10 +301,11 @@ fn serve_refuses_an_ineligible_install_in_the_words_check_uses() {
     let id = seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2026-09-01 10:00:00").with("future_price_drop_limited", serde_json::json!(true)));
     drop(o);
     let checked = cli(dir.path(), &["check"]).output().unwrap();
-    let served = finished(cli(dir.path(), &["serve"]).env("PORT", free_port().to_string()));
-    assert_eq!((checked.status.code(), served.status.code()), (Some(1), Some(1)));
-    assert!(stderr(&served).contains(&format!("bot {id} (scheduled): future_price_drop_limited")), "{}", stderr(&served));
-    assert_eq!(stderr(&served), stderr(&checked), "the same words, byte for byte");
+    let served = refused(dir.path(), &mut cli(dir.path(), &["serve"]));
+    assert_eq!((checked.status.code(), served.status), (Some(1), Some(0)));
+    assert!(served.stderr.contains(&format!("bot {id} (scheduled): future_price_drop_limited")), "{}", served.stderr);
+    assert_eq!(served.stderr, stderr(&checked), "the same words, byte for byte");
+    assert!(served.page.contains(&format!("bot {id} (scheduled): future_price_drop_limited")), "the page shows them too: {}", served.page);
     assert!(lease_of(dir.path()).is_none(), "nothing claimed");
 }
 
@@ -338,7 +396,7 @@ async fn scheduler_process(command: &str, restart: bool) -> Result<(), Box<dyn s
         o.primary.execute("UPDATE app_configs SET value = json_set(value, '$.last_success_at', '2020-01-01T00:00:00Z', '$.rails_at', NULL, '$.incomplete_since', '2020-01-01T00:00:00Z') WHERE key = ?1",
             ["rust_job.sync_alpaca_crypto_from_deltabadger_job"])?;
         assert!(deltabadger::engine::eligibility::check_install_at(&o.primary, chrono::Utc::now())
-            .map_err(|e| format!("{e:?}"))?.problems.iter().any(|m| m.contains("reference data stale")));
+            .map_err(|e| format!("{e:?}"))?.notes.iter().any(|m| m.contains("reference data stale")));
     }
     drop(o);
     let mut child = Running(cli(dir.path(), &[command]).env("MARKET_DATA_URL", server.uri()).env("MARKET_DATA_TOKEN", "tok")
@@ -382,17 +440,77 @@ async fn run_and_serve_restart_a_stale_engine_owned_install_and_start_the_schedu
 }
 
 #[test]
-fn run_and_serve_refuse_stale_reference_data_while_rails_owns_the_install() -> Result<(), Box<dyn std::error::Error>> {
+fn run_and_serve_take_over_an_install_rails_left_stale_and_note_the_staleness() -> Result<(), Box<dyn std::error::Error>> {
+    // D-UPGRADE-FRESHNESS-AT-TICK (PLAN-B2 R2): only this engine's scheduler, which starts after the claim, can refresh the
+    // data, so the takeover admits the bot and notes the staleness; the tick refuses it (tests/tick_basket.rs).
     for command in ["run", "serve"] {
         let (dir, o, s) = common::install_alpaca();
-        seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2099-01-01 00:00:00"));
+        let id = seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2099-01-01 00:00:00")); // never due: no call to Alpaca
         o.primary.execute("UPDATE exchange_assets SET updated_at = '2020-01-01 00:00:00'", [])?;
-        let out = finished(cli(dir.path(), &[command]).env("PORT", free_port().to_string()));
-        assert_eq!(out.status.code(), Some(1), "{command}: {}", stderr(&out));
-        assert!(stderr(&out).contains("reference data stale"));
-        assert!(deltabadger::lease::read(&o.primary, &seed::cipher()).map_err(|e| format!("{e:?}"))?.is_none());
+        drop(o);
+
+        let out = cli(dir.path(), &["check"]).output()?;
+        assert_eq!(out.status.code(), Some(0), "check: {}", stderr(&out));
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(said.lines().any(|l| l.starts_with(&format!("note: bot {id} (scheduled): reference data stale: Alpaca crypto tickers"))), "{said}");
+        assert!(said.contains("ready: 1 bot(s) this engine can run"), "{said}");
+
+        let mut child = Running(cli(dir.path(), &[command]).env("PORT", free_port().to_string()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stdout = child.0.stdout.take().unwrap();
+        std::thread::spawn(move || for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) { let _ = tx.send(line); });
+        let mut before = vec![];
+        let took = loop {
+            let line = rx.recv_timeout(std::time::Duration::from_secs(20)).map_err(|_| format!("{command}: no takeover within 20 s after {before:?}"))?;
+            if line.contains("took over") { break line; }
+            before.push(line);
+        };
+        assert!(took.contains("1 bot(s)"), "{command}: {took}");
+        assert!(before.iter().any(|l| l.contains(&format!("[check] bot {id} (scheduled): reference data stale"))), "{command}: {before:?}");
+        // "took over" comes before the SIGTERM handler; this line comes after it, so the signal below is never the default kill.
+        loop {
+            let line = rx.recv_timeout(std::time::Duration::from_secs(20)).map_err(|_| format!("{command}: not running within 20 s"))?;
+            if line.contains("SIGTERM finishes") { break; }
+        }
+        assert_eq!(lease_of(dir.path()).unwrap()["engine"], "rust", "{command} took the install over");
+        assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status()?.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let status = loop {
+            if let Some(st) = child.0.try_wait()? { break st; }
+            assert!(std::time::Instant::now() < deadline, "{command} did not exit on SIGTERM");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(status.code(), Some(0), "{command}");
     }
     Ok(())
+}
+
+/// R2 as narrowed by PLAN-B2 r1.8: only freshness left the takeover. A bot whose flip rule's target direction is ineligible
+/// (here: selling, with an order of its history placed on another venue) is still refused by `check`, `run` and `serve`.
+#[test]
+fn check_run_and_serve_still_refuse_a_bot_whose_flip_target_is_ineligible() {
+    let (dir, o, s) = common::install(); // Kraken
+    let spec = BotSpec::weekly(60.0, "2099-01-01 00:00:00").with("direction", serde_json::json!("buying"))
+        .with("sell_denomination", serde_json::json!("quote")).with("sell_quote_amount", serde_json::json!(60))
+        .with("price_limited", serde_json::json!(true)).with("price_limit", serde_json::json!(60000))
+        .with("price_limit_value_condition", serde_json::json!("below")).with("price_limit_action", serde_json::json!("start_selling"));
+    let id = seed::insert_bot(&o.primary, &s, &spec);
+    let row = seed::insert_row(&o.primary, &s, id, s.btc, &serde_json::json!({"status":0,"external_status":2,"side":0,
+        "amount":"0.0012","amount_exec":"0.0012","quote_amount_exec":"60","created_at":"2026-09-02 10:00:00"}));
+    o.primary.execute("INSERT INTO exchanges (type, name, created_at, updated_at) VALUES ('Exchanges::Binance', 'Binance', '2026-01-01', '2026-01-01')", []).unwrap();
+    o.primary.execute("UPDATE transactions SET exchange_id = last_insert_rowid() WHERE id = ?1", [row]).unwrap();
+    o.primary.execute("UPDATE bots SET transient_data = json_set(transient_data, '$.merged_history_until_id', ?1) WHERE id = ?2", [row, id]).unwrap();
+    drop(o);
+    let reason = format!("bot {id} (scheduled): selling with 1 order(s) placed on another venue");
+    for command in ["check", "run"] {
+        let out = finished(cli(dir.path(), &[command]).env("PORT", free_port().to_string()));
+        assert_eq!(out.status.code(), Some(1), "{command}: {}", stderr(&out));
+        assert!(stderr(&out).contains(&reason), "{command}: {}", stderr(&out));
+    }
+    let r = refused(dir.path(), &mut cli(dir.path(), &["serve"]));
+    assert_eq!(r.status, Some(0), "{}", r.stderr);
+    assert!(r.stderr.contains(&reason) && r.page.contains("selling with 1 order(s) placed on another venue"), "{}", r.stderr);
+    assert!(lease_of(dir.path()).is_none(), "nothing was taken over");
 }
 
 #[test]
@@ -405,4 +523,261 @@ fn binance_repair_requires_explicit_mode_approval_and_rust_ownership() {
     let out=cli(dir.path(),&["repair-binance-history","--inventory"]).output().unwrap();
     assert!(!out.status.success());assert!(stderr(&out).contains("Rust ownership required"));
     assert!(deltabadger::lease::read(&o.primary,&seed::cipher()).unwrap().is_none());
+}
+
+/// PLAN-B2 B2-0 (r1.0, r2.8): a store refusal (here Behind: the newest Rails migration missing) keeps `serve` up on the
+/// refusal page. Every path shows the refusal with 503, `/health-check` and `/up` are 503, `/ui-ready` is 200, the engine
+/// lock is free while it shows, no file changes, and SIGTERM stops it with 0. `run` and `check` still just exit 1.
+#[test]
+fn a_refused_serve_shows_why_on_its_port_and_writes_nothing() {
+    let dir = common::rails_install_unmigrated();
+    let c = rusqlite::Connection::open(dir.path().join("production.sqlite3")).unwrap();
+    c.execute("DELETE FROM schema_migrations WHERE version = (SELECT max(version) FROM schema_migrations)", []).unwrap();
+    drop(c);
+    let before = files_of(dir.path());
+    let r = refused(dir.path(), &mut cli(dir.path(), &["serve"]));
+    assert_eq!(r.status, Some(0), "stopped as asked: {}", r.stderr);
+    assert!(r.stderr.contains("this data is behind this build"), "{}", r.stderr);
+    for answer in [&r.page, &r.health, &r.up] { assert!(answer.starts_with("HTTP/1.1 503"), "{answer}"); }
+    assert!(r.page.contains("this data is behind this build") && r.page.contains("<h1"), "{}", r.page);
+    assert!(r.ready.starts_with("HTTP/1.1 200"), "{}", r.ready);
+    assert!(r.lock_free, "the refusal page holds no engine lock");
+    assert_eq!(files_of(dir.path()), before, "a refused serve writes nothing");
+    for cmd in ["run", "check"] {
+        let out = finished(&mut cli(dir.path(), &[cmd]));
+        assert_eq!(out.status.code(), Some(1), "{cmd}: {}", stderr(&out));
+    }
+}
+
+/// A Solid Queue heartbeat `seconds_ago` old, as a pre-floor 2.x Rails leaves it (no flock).
+fn rails_heartbeat(dir: &Path, seconds_ago: i64) {
+    let at = deltabadger::codec::format_time(chrono::Utc::now() - chrono::Duration::seconds(seconds_ago));
+    rusqlite::Connection::open(dir.join("production_queue.sqlite3")).unwrap().execute(
+        "INSERT INTO solid_queue_processes (kind, last_heartbeat_at, pid, hostname, created_at, name) VALUES ('Worker', ?1, 1, 'h', ?1, 'w')", [at]).unwrap();
+}
+
+/// A child with its stdout lines on a channel and stderr piped.
+fn spawn_logged(cmd: &mut Command) -> (Running, std::sync::mpsc::Receiver<String>) {
+    let mut child = Running(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stdout = child.0.stdout.take().unwrap();
+    std::thread::spawn(move || for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) { let _ = tx.send(line); });
+    (child, rx)
+}
+
+fn exited(child: &mut Running, within: std::time::Duration) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if let Some(s) = child.0.try_wait().unwrap() { return s; }
+        assert!(std::time::Instant::now() < deadline, "still running after {within:?}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// PLAN-B2 R1, r2.8: a heartbeat about 115 s old (a 2.x container just stopped) makes `serve` wait about 6 s, showing
+/// the wait on its port, then take the install over and serve the app on the same port.
+#[test]
+fn serve_waits_out_a_just_stopped_rails_showing_the_wait_on_its_port_then_takes_over() {
+    let (dir, o, s) = common::install_alpaca();
+    seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2099-01-01 00:00:00")); // never due: no call to Alpaca
+    drop(o);
+    rails_heartbeat(dir.path(), 115);
+    let port = free_port();
+    let (mut child, rx) = spawn_logged(cli(dir.path(), &["serve"]).env("PORT", port.to_string()));
+    let next = || rx.recv_timeout(std::time::Duration::from_secs(20)).expect("a log line within 20 s");
+    let waiting = next();
+    assert!(waiting.contains("the previous version stopped ") && waiting.contains(" s ago; waiting ") && waiting.ends_with(" s before taking over"), "{waiting}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let page = loop {
+        if let Some(answer) = http_get(port, "/") { break answer; }
+        assert!(std::time::Instant::now() < deadline, "no page while waiting");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(page.starts_with("HTTP/1.1 503") && page.contains("<h1 style=\"font-size: 1.4rem\">Deltabadger is starting</h1>")
+            && page.contains("then your bots will start again. This page reloads on its own.")
+            && page.contains("<meta http-equiv=\"refresh\" content=\"5\">"), "{page}");
+    assert!(http_get(port, "/ui-ready").unwrap().starts_with("HTTP/1.1 200"));
+    assert!(http_get(port, "/up").unwrap().starts_with("HTTP/1.1 503"));
+    assert!(lease_of(dir.path()).is_none(), "nothing claimed while waiting");
+    let took = next();
+    assert!(took.contains("took over"), "{took}");
+    let running = next();
+    assert!(running.contains(&format!("port {port}")), "{running}");
+    assert!(http_up(port).is_some_and(|a| a.starts_with("HTTP/1.1 200")), "the app answers on the same port");
+    assert_eq!(lease_of(dir.path()).unwrap()["engine"], "rust");
+    assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
+    assert_eq!(exited(&mut child, std::time::Duration::from_secs(20)).code(), Some(0));
+}
+
+/// r1.13: SIGTERM during the wait stops `serve` with 0; nothing is claimed and no file changes.
+#[test]
+fn sigterm_during_serves_wait_exits_0_and_writes_nothing() {
+    let (dir, o, _) = common::install_alpaca();
+    drop(o);
+    rails_heartbeat(dir.path(), 30);
+    let mut serve = cli(dir.path(), &["serve"]); // cli() seeds job state for `serve`: before the snapshot
+    let before = files_of(dir.path());
+    let (mut child, rx) = spawn_logged(serve.env("PORT", free_port().to_string()));
+    let waiting = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the wait's line");
+    assert!(waiting.contains("waiting 9"), "{waiting}"); // 90 or 91 s
+    assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
+    assert_eq!(exited(&mut child, std::time::Duration::from_secs(10)).code(), Some(0));
+    assert!(lease_of(dir.path()).is_none(), "nothing claimed");
+    assert_eq!(files_of(dir.path()), before, "nothing written");
+}
+
+/// R1: only `run` and `serve` wait. `check` and `handback` still refuse a fresh heartbeat at once, in today's words.
+#[test]
+fn check_and_handback_refuse_a_fresh_heartbeat_at_once() {
+    let dir = common::rails_install();
+    rails_heartbeat(dir.path(), 5);
+    for cmd in ["check", "handback"] {
+        let started = std::time::Instant::now();
+        let out = finished(&mut cli(dir.path(), &[cmd]));
+        assert_eq!(out.status.code(), Some(1), "{cmd}");
+        let err = stderr(&out);
+        assert!(err.contains("the Rails app looks alive (job heartbeat ") && err.contains("s ago); stop it first"), "{cmd}: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{cmd} took {:?}", started.elapsed());
+    }
+}
+
+/// R1: a Rails that keeps its heartbeat fresh is refused after the one wait, in today's words.
+#[test]
+fn run_refuses_a_heartbeat_still_fresh_after_its_one_wait() {
+    let dir = common::rails_install();
+    rails_heartbeat(dir.path(), 115);
+    let (mut child, rx) = spawn_logged(&mut cli(dir.path(), &["run"]));
+    let waiting = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the wait's line");
+    assert!(waiting.contains("before taking over"), "{waiting}");
+    rails_heartbeat(dir.path(), 0); // still running: it stamps again during the wait
+    assert_eq!(exited(&mut child, std::time::Duration::from_secs(20)).code(), Some(1));
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(err.contains("the Rails app looks alive (job heartbeat ") && err.contains("s ago); stop it first"), "{err}");
+    assert!(rx.try_iter().all(|line| !line.contains("before taking over")), "one wait only");
+    assert!(lease_of(dir.path()).is_none());
+}
+
+/// A stop sent after the wait but before the engine's own handlers still stops the engine: the wait's handlers replaced
+/// the default exit, and the signal is held until the engine's handlers take it (`serve` runs a runtime, the bind, in
+/// between).
+#[cfg(debug_assertions)]
+#[test]
+fn a_stop_between_the_wait_and_the_engine_stops_the_engine() {
+    let (dir, o, _) = common::install_alpaca();
+    drop(o);
+    rails_heartbeat(dir.path(), 115);
+    let (mut child, rx) = spawn_logged(cli(dir.path(), &["serve"]).env("PORT", free_port().to_string()).env("DELTABADGER_TEST_PAUSE", "after-wait"));
+    let waiting = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the wait's line");
+    let wait: u64 = waiting.split("waiting ").nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).expect(&waiting);
+    std::thread::sleep(std::time::Duration::from_millis(wait * 1000 + 1000)); // inside the 3 s pause after the wait
+    assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
+    assert_eq!(exited(&mut child, std::time::Duration::from_secs(20)).code(), Some(0));
+    let lines: Vec<String> = rx.try_iter().collect();
+    assert!(lines.iter().any(|l| l.contains("took over")), "the stop landed after the wait: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("stopped on request")), "{lines:?}");
+}
+
+// ---- PLAN-B2 r4.6 / r2.4: the store check, then the secret check, before anything is written ----------------------------
+
+/// C9, as `run`, `serve`, `handback` and `check` print it.
+const WRONG_SECRET: &str = "can't read this install with this SECRET_KEY_BASE. Use the secret this install was created with.";
+
+/// A 2.x install's first start with a wrong secret: refused with C9 on the refusal page before any Rust migration, so
+/// every file is byte-equal (a migration, the identity reset or a claim would each change one).
+#[test]
+fn serve_with_a_wrong_secret_on_an_unmigrated_2x_install_refuses_before_any_write() {
+    let dir = common::rails_install_unmigrated();
+    let c = rusqlite::Connection::open(dir.path().join("production.sqlite3")).unwrap();
+    let s = seed::seed_kraken(&c, &seed::cipher());
+    seed::insert_bot(&c, &s, &BotSpec::weekly(60.0, "2099-01-01 00:00:00"));
+    drop(c);
+    let mut cmd = cli(dir.path(), &["serve"]);
+    cmd.env("SECRET_KEY_BASE", "another-instance");
+    let before = files_of(dir.path());
+    let r = refused(dir.path(), &mut cmd);
+    assert_eq!(r.status, Some(0), "stopped as asked: {}", r.stderr);
+    assert!(r.stderr.contains(WRONG_SECRET), "{}", r.stderr);
+    assert!(r.page.starts_with("HTTP/1.1 503") && r.page.contains("SECRET_KEY_BASE"), "{}", r.page);
+    assert_eq!(files_of(dir.path()), before, "no Rust migration, no write");
+}
+
+/// A Rust-owned install with known account identities: a wrong secret refuses before identity::initialize, which would
+/// read the unreadable identity key as an encryption reset and clear them.
+#[test]
+fn run_with_a_wrong_secret_leaves_known_account_identities_untouched() {
+    let (dir, o, s) = common::install_alpaca();
+    seed::insert_bot(&o.primary, &s, &BotSpec::weekly(60.0, "2099-01-01 00:00:00"));
+    let now = chrono::Utc::now();
+    deltabadger::app_config::set(&o.primary, &seed::cipher(), deltabadger::identity::KEY_CONFIG, &"ab".repeat(32), now).unwrap();
+    o.primary.execute("INSERT INTO exchange_accounts (user_id, exchange_id, fingerprint, account_id_enc, created_at, updated_at) VALUES (?1, ?2, 'fp', x'01', '2026-01-01', '2026-01-01')",
+                      [s.user_id, s.exchange_id]).unwrap();
+    let paths = deltabadger::store::Paths::from_env(&|_| None, dir.path());
+    let lock = deltabadger::lease::lock(&paths, now).unwrap();
+    deltabadger::lease::claim(&lock, &o.primary, &seed::cipher(), "test", now).unwrap();
+    drop((lock, o));
+    let mut cmd = cli(dir.path(), &["run"]);
+    cmd.env("SECRET_KEY_BASE", "another-instance");
+    let before = files_of(dir.path());
+    let out = finished(&mut cmd);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains(WRONG_SECRET), "{}", stderr(&out));
+    assert_eq!(files_of(dir.path()), before, "the identity key and exchange_accounts are byte-equal");
+}
+
+/// v2.0.0's primary (its 49 migrations, which are this build's first 49) with no other Rails table: Behind in today's
+/// words, before the secret check could read app_configs (there is none); a wrong secret changes nothing about that.
+#[test]
+fn a_v2_0_0_primary_is_behind_before_the_secret_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let template = common::rails_install_unmigrated();
+    std::fs::copy(template.path().join("production_queue.sqlite3"), dir.path().join("production_queue.sqlite3")).unwrap();
+    let c = rusqlite::Connection::open(dir.path().join("production.sqlite3")).unwrap();
+    c.execute_batch("CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY)").unwrap();
+    let mut versions: Vec<&str> = deltabadger::store::MIGRATIONS.to_vec();
+    versions.sort();
+    for v in &versions[..49] { c.execute("INSERT INTO schema_migrations (version) VALUES (?1)", [v]).unwrap(); }
+    drop(c);
+    let before = files_of(dir.path());
+    for cmd in ["run", "check"] {
+        let out = finished(cli(dir.path(), &[cmd]).env("SECRET_KEY_BASE", "another-instance"));
+        assert_eq!(out.status.code(), Some(1), "{cmd}");
+        assert!(stderr(&out).contains("this data is behind this build (74 migration(s) missing)"), "{cmd}: {}", stderr(&out));
+        assert!(!stderr(&out).contains(WRONG_SECRET), "{cmd}");
+    }
+    assert_eq!(files_of(dir.path()), before);
+}
+
+/// `check` predicts `serve` (PLAN-B2 r2.2): an index bot holding a malformed switch Rails never read ("1") is refused, but a pending
+/// Rust migration (clear_stray_conditions) turns it off at the start, so `check` assesses a copy with it applied and
+/// says ready, writing nothing; `serve` then takes the install over.
+#[test]
+fn check_assesses_the_install_as_serve_will_after_its_pending_migrations() {
+    let dir = common::rails_install_unmigrated();
+    let c = rusqlite::Connection::open(dir.path().join("production.sqlite3")).unwrap();
+    let s = seed::seed_kraken(&c, &seed::cipher());
+    let bot = seed::index_bot(&c, &s, "ignored", 3, 0.0, false);
+    c.execute("UPDATE bots SET started_at = '2099-01-01 00:00:00', settings = json_set(settings, '$.price_limited', '1') WHERE id = ?1", [bot]).unwrap();
+    drop(c);
+    let before = files_of(dir.path());
+    let out = cli(dir.path(), &["check"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", stderr(&out));
+    assert!(stdout.contains("pending Rust migration 20261025000001") && stdout.contains("ready: 1 bot(s)"), "{stdout}");
+    assert!(!stdout.contains("SECRET_KEY_BASE"), "{stdout}");
+    let keyless = cli(dir.path(), &["check"]).env_remove("SECRET_KEY_BASE").output().unwrap();
+    let keyless_out = String::from_utf8_lossy(&keyless.stdout);
+    assert_eq!(keyless.status.code(), Some(0), "{keyless_out}{}", stderr(&keyless));
+    assert!(keyless_out.contains("note: SECRET_KEY_BASE isn't set, so this didn't check that the install's stored keys can be read.") && keyless_out.contains("ready: 1 bot(s)"), "{keyless_out}");
+    let wrong = cli(dir.path(), &["check"]).env("SECRET_KEY_BASE", "another-instance").output().unwrap();
+    assert_eq!(wrong.status.code(), Some(1));
+    assert!(stderr(&wrong).contains(WRONG_SECRET), "{}", stderr(&wrong));
+    assert_eq!(files_of(dir.path()), before, "check changes no byte");
+
+    let (mut child, rx) = spawn_logged(cli(dir.path(), &["serve"]).env("PORT", free_port().to_string()));
+    let mut lines = std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(30)).ok());
+    assert!(lines.find(|l| l.contains("took over")).is_some_and(|l| l.contains("1 bot(s)")), "serve took the install over with the bot");
+    assert!(lines.find(|l| l.contains("running")).is_some(), "signal handlers are registered before this line");
+    assert!(Command::new("kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
+    assert_eq!(exited(&mut child, std::time::Duration::from_secs(20)).code(), Some(0));
 }

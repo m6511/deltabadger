@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_17_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_090000) do
   create_table "account_balances", force: :cascade do |t|
     t.integer "asset_id", null: false
     t.datetime "created_at", null: false
@@ -546,6 +546,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_17_100000) do
     t.datetime "created_at", precision: nil, null: false
     t.string "display_currency", default: "USD", null: false
     t.string "email", default: "", null: false
+    t.boolean "email_bot_errors", default: true, null: false
+    t.boolean "email_bot_stopped", default: true, null: false
+    t.boolean "email_low_funds", default: true, null: false
     t.string "encrypted_password", default: "", null: false
     t.integer "failed_attempts", default: 0, null: false
     t.boolean "hide_balances", default: false, null: false

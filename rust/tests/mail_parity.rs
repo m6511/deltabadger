@@ -42,13 +42,19 @@ fn recipient(c: &Connection, user_id: i64, locale: Option<&str>, to: Option<&str
     Recipient { email: to.map_or(email, str::to_string), name: name.unwrap_or_default(), locale }
 }
 
-fn build(c: &Connection, case: &Value) -> Message {
+/// None when the crate sends nothing: a bot mail its owner switched off.
+fn build(c: &Connection, case: &Value) -> Option<Message> {
     let sender_env = Env::read(&|name| if name == "NOTIFICATIONS_SENDER" { case["sender"].as_str().map(str::to_string) } else { None });
     let from = notifications_sender(&sender_env, &|_| None);
     let urls = Urls::from_env(&|name| if name == "APP_ROOT_URL" { case["root"].as_str().map(str::to_string) } else { None });
     if let Some(n) = case.get("notice") {
         let bot_id = n["bot_id"].as_i64().unwrap();
         let error = || n["error"].as_str().unwrap().to_string();
+        if n["mail"] == "notify_about_restart" {
+            let now = chrono::DateTime::parse_from_rfc3339("2026-09-10T12:00:30Z").unwrap().with_timezone(&chrono::Utc);
+            let restart_at = now + chrono::Duration::seconds(n["delay"].as_i64().unwrap());
+            return render::for_restart(c, bot_id, &error(), restart_at, now, &from, &urls).unwrap();
+        }
         let notice = match n["mail"].as_str().unwrap() {
             "end_of_funds" => {
                 let quote: i64 = c.query_row("SELECT json_extract(settings, '$.quote_asset_id') FROM bots WHERE id = ?1", [bot_id], |r| r.get(0)).unwrap();
@@ -59,16 +65,16 @@ fn build(c: &Connection, case: &Value) -> Message {
             "stopped_by_amount_limit" => Notice::StoppedByAmountLimit,
             other => panic!("unknown mail {other}"),
         };
-        return render::for_notice(c, bot_id, &notice, &from, &urls).unwrap().expect("a mail");
+        return render::for_notice(c, bot_id, &notice, &from, &urls).unwrap();
     }
     let to = recipient(c, case["user_id"].as_i64().unwrap(), case["locale"].as_str(), case["to"].as_str());
-    match case["account"].as_str().unwrap() {
+    Some(match case["account"].as_str().unwrap() {
         "reset_password_instructions" => render::reset_password_instructions(&from, &urls, &to, case["token"].as_str().unwrap()),
         "confirmation_instructions" => render::confirmation_instructions(&from, &urls, &to, case["token"].as_str().unwrap()),
         "email_already_taken" => render::email_already_taken(&from, &urls, &to),
         "test_email" => render::test_email(&from, &urls, &to),
         other => panic!("unknown account mail {other}"),
-    }
+    })
 }
 
 #[test]
@@ -77,7 +83,10 @@ fn rails_and_rust_build_the_same_mails_across_the_grid() {
     common::rails(scratch.path(), "test", &["runner", "script/rust/schema_template.rb"]);
     common::rails(scratch.path(), "test", &["runner", "script/rust/mails.rb", dir.path().to_str().unwrap()]);
     let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("cases.json")).unwrap()).unwrap();
-    assert_eq!(cases.len(), 234, "the grid has {} mails", cases.len());
+    assert_eq!(cases.len(), 301, "the grid has {} mails", cases.len());
+    // BotAlertsMailer::ALERT_SWITCHES: every bot mail once more for each of three owners, each with one alert switched off.
+    assert_eq!(cases.iter().filter(|case| case["rails"].is_null()).count(), 5, "the grid's switched-off mails");
+    assert_eq!(cases.iter().filter(|case| case["notice"]["mail"] == "notify_about_restart").count(), 55, "restart mails include enabled and disabled bot-error alerts");
     let c = Connection::open(dir.path().join("production.sqlite3")).unwrap();
     let now = chrono::Utc::now();
     let mut failures = vec![];
@@ -85,7 +94,11 @@ fn rails_and_rust_build_the_same_mails_across_the_grid() {
     let mut plain_decimals = 0;
     for case in &cases {
         let name = case["name"].as_str().unwrap();
-        let mut ours = build(&c, case);
+        let Some(mut ours) = build(&c, case) else {
+            if !case["rails"].is_null() { failures.push(format!("{name}: Rails sent a mail, the crate built none")); }
+            continue;
+        };
+        if case["rails"].is_null() { failures.push(format!("{name}: Rails sent nothing, the crate built a mail")); continue; }
         // D-MAIL-PLAIN-DECIMAL: the amount-limit mail writes a tiny limit as "0.00001" where Rails prints "1.0e-05".
         if case["notice"]["mail"] == "stopped_by_amount_limit" && ours.html.contains("0.00001") {
             assert!(!ours.html.contains("e-05"), "{name}: {}", ours.html);
@@ -317,6 +330,47 @@ async fn a_wake_makes_the_sender_look_at_once_and_a_week_old_marker_is_given_up(
         assert!(server.messages()[0].contains("running out of USD"), "the week-old stop mail is not sent");
         stop.send(true).unwrap();
         run.await.unwrap().unwrap();
+    }).await;
+}
+
+#[tokio::test]
+async fn disabled_alerts_are_discarded_without_smtp_and_do_not_return_when_enabled() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut i = install();
+        let user: i64 = i.o.primary.query_row("SELECT user_id FROM bots WHERE id=?1", [i.bot_id], |r| r.get(0)).unwrap();
+        let switches = |on: bool| i.o.primary.execute("UPDATE users SET email_low_funds = ?1, email_bot_errors = ?1, email_bot_stopped = ?1 WHERE id = ?2",
+                                                       rusqlite::params![on, user]).unwrap();
+        switches(false);
+        let now = chrono::Utc::now();
+        mark(&i, notice::FUNDS, notice::funds_marker(Some(i.quote), now));
+        mark(&i, notice::ERROR, notice::error_marker(None, "unknown", "order refused", now));
+        mark(&i, notice::STOPPED, notice::stopped_marker("unauthorized.", now));
+        mark(&i, notice::LIMIT, notice::limit_marker(now));
+        mark(&i, notice::BASE_LIMIT, notice::limit_marker(now));
+        assert_eq!(markers(&i).len(), 5);
+
+        let db = Connection::open(i.o.primary.path().unwrap()).unwrap();
+        store::configure(&db).unwrap();
+        let mut unconfigured = Sender::new(db, seed::cipher(), &|_| None, SystemClock);
+        unconfigured.poll = Duration::from_millis(30);
+        let (stop, stopped) = watch::channel(false);
+        let run = tokio::task::spawn_local(unconfigured.run(stopped, None::<mpsc::UnboundedReceiver<()>>));
+        until("disabled alerts were discarded without SMTP settings", || markers(&i).is_empty()).await;
+        stop.send(true).unwrap();
+        assert_eq!(run.await.unwrap(), Ok(()));
+
+        switches(true);
+        mark(&i, notice::FUNDS, notice::funds_marker(Some(i.quote), chrono::Utc::now()));
+        let server = smtp::start(Behaviour { starttls: true, auth: true, ..Default::default() }).await;
+        let (stop, stopped) = watch::channel(false);
+        let db = std::mem::replace(&mut i.sender_db, Connection::open_in_memory().unwrap());
+        let run = tokio::task::spawn_local(sender(db, server.port).run(stopped, None::<mpsc::UnboundedReceiver<()>>));
+        until("only the fresh alert was sent", || server.messages().len() == 1 && markers(&i).is_empty()).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(server.messages().len(), 1, "re-enabling alerts must not revive discarded mail");
+        assert!(server.messages()[0].contains("running out of USD"));
+        stop.send(true).unwrap();
+        assert_eq!(run.await.unwrap(), Ok(()));
     }).await;
 }
 
